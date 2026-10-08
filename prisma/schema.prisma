@@ -1,0 +1,134 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Layer 1: Input Universe ────────────────────────────────────────────────
+
+model DomainStream {
+  id            String     @id @default(cuid())
+  name          String
+  category      String // papers | patents | clinical | markets | biology | physics | chemistry | economics | sensors | simulation
+  status        String     @default("active") // active | throttled | offline
+  itemsIngested Int        @default(0)
+  velocity      Float      @default(0)
+  health        Float      @default(1)
+  createdAt     DateTime   @default(now())
+  signals       RawSignal[]
+}
+
+model RawSignal {
+  id           String       @id @default(cuid())
+  streamId     String
+  stream       DomainStream @relation(fields: [streamId], references: [id])
+  category     String
+  title        String
+  content      String
+  features     String       @default("{}") // JSON: {entropy, periodicity, gradient, dimensionality}
+  anomalyScore Float        @default(0)
+  noveltyScore Float        @default(0)
+  cycle        Int          @default(0)
+  promoted     Boolean      @default(false)
+  createdAt    DateTime     @default(now())
+}
+
+// ─── Layer 4: Discovery ─────────────────────────────────────────────────────
+
+model Hypothesis {
+  id              String   @id @default(cuid())
+  title           String
+  summary         String
+  domains         String   @default("[]") // JSON string[]
+  novelty         Float    @default(0)
+  impact          Float    @default(0)
+  confidence      Float    @default(0)
+  status          String   @default("testing") // generated | testing | validated | rejected | promoted
+  counterfactuals String   @default("[]") // JSON [{question, result, supports}]
+  validation      String   @default("{}") // JSON {simulations, passed, failed, pValue, effectSize}
+  sourceSignals   String   @default("[]") // JSON string[]
+  generator       String   @default("template") // llm | template
+  cycle           Int      @default(0)
+  createdAt       DateTime @default(now())
+}
+
+// ─── Layer 5: Breakthrough ──────────────────────────────────────────────────
+
+model Breakthrough {
+  id           String   @id @default(cuid())
+  hypothesisId String
+  title        String
+  solutionType String // molecule | engineering | financial | protocol | model
+  summary      String
+  synthesis    String   @default("{}") // JSON {components, mechanism, feasibility, expectedGain, timeHorizon}
+  impactRank   Float    @default(0)
+  riskScore    Float    @default(0)
+  status       String   @default("synthesized") // synthesized | governed | deployed | blocked
+  cycle        Int      @default(0)
+  createdAt    DateTime @default(now())
+}
+
+// ─── Layer 7: Governance ────────────────────────────────────────────────────
+
+model GovernanceCheck {
+  id               String   @id @default(cuid())
+  targetType       String // hypothesis | breakthrough
+  targetId         String
+  targetTitle      String
+  riskScore        Float    @default(0)
+  ethicalFlags     String   @default("[]") // JSON string[]
+  validationStatus String   @default("pending") // pending | passed | flagged | rejected | approved
+  humanReview      Boolean  @default(false)
+  reviewDecision   String? // approved | rejected
+  notes            String   @default("")
+  cycle            Int      @default(0)
+  createdAt        DateTime @default(now())
+}
+
+// ─── Layer 3: Cross-domain correlation ──────────────────────────────────────
+
+model CrossDomainLink {
+  id           String   @id @default(cuid())
+  sourceDomain String
+  targetDomain String
+  strength     Float
+  mechanism    String
+  cycle        Int      @default(0)
+  createdAt    DateTime @default(now())
+}
+
+// ─── Engine runtime state (singleton row) ───────────────────────────────────
+
+model EngineState {
+  id          String   @id @default("singleton")
+  status      String   @default("running") // running | paused
+  cycles      Int      @default(0)
+  startedAt   DateTime @default(now())
+  lastTickAt  DateTime @default(now())
+  config      String   @default("{}") // JSON {tickIntervalMs, llmDiscovery, aggression}
+}
+
+// ─── Layer 6: self-optimization metrics ─────────────────────────────────────
+
+model LayerMetric {
+  id        String   @id @default(cuid())
+  layer     Int
+  key       String
+  value     Float
+  cycle     Int      @default(0)
+  createdAt DateTime @default(now())
+}
+
+// ─── Layer 8: Output ────────────────────────────────────────────────────────
+
+model InsightReport {
+  id         String   @id @default(cuid())
+  title      String
+  reportType String // alert | deep-dive | cycle-summary
+  content    String
+  cycle      Int      @default(0)
+  createdAt  DateTime @default(now())
+}

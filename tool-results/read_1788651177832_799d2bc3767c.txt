@@ -1,0 +1,803 @@
+     1→'use client';
+     2→
+     3→/**
+     4→ * LAYERS WORKSPACE — per-layer drilldown.
+     5→ * A selector rail across the 8 inference layers; the selected layer expands
+     6→ * into a full-width workspace: live metrics grid, per-cycle sparkline (honest
+     7→ * series derived from the polled payload), and a scrollable entity ledger.
+     8→ * Shares the `layerKey` preference with the Layer Stack detail panel, so a
+     9→ * selection here follows the operator across workspaces.
+    10→ * Accent rules: zinc dark base, emerald/amber/rose/violet/teal only.
+    11→ */
+    12→
+    13→import { useMemo, type ComponentType } from 'react';
+    14→import { motion } from 'framer-motion';
+    15→import {
+    16→  Activity,
+    17→  Boxes,
+    18→  ChevronRight,
+    19→  GitBranch,
+    20→  ScrollText,
+    21→  ShieldCheck,
+    22→  Signal as SignalIcon,
+    23→  Trophy,
+    24→  Wrench,
+    25→  type LucideProps,
+    26→} from 'lucide-react';
+    27→import { Panel, Meter, EmptyState, fmtNum, fmtScore, labelKey, timeAgo, type MeterTone } from '@/components/dashboard/shared';
+    28→import { hypothesisStatusClass, riskBadgeClass, solutionMeta } from '@/components/dashboard/meta';
+    29→import { usePreferences } from '@/hooks/use-preferences';
+    30→import type {
+    31→  Breakthrough,
+    32→  EngineInfo,
+    33→  EngineLayer,
+    34→  EngineStatePayload,
+    35→  GovernanceCheck,
+    36→  Hypothesis,
+    37→  InsightReport,
+    38→  Signal,
+    39→} from '@/lib/dashboard-types';
+    40→import { cn } from '@/lib/utils';
+    41→
+    42→// ─── Layer registry (client-side mirror of the engine's 8 layers) ────────────
+    43→
+    44→interface LayerSpec {
+    45→  layer: number;
+    46→  name: string;
+    47→  icon: ComponentType<LucideProps>;
+    48→  tone: MeterTone;
+    49→  /** One-line description of what the entity ledger shows for this layer. */
+    50→  ledgerLabel: string;
+    51→}
+    52→
+    53→const LAYER_SPECS: LayerSpec[] = [
+    54→  { layer: 1, name: 'Input Universe', icon: SignalIcon, tone: 'teal', ledgerLabel: 'Domain streams' },
+    55→  { layer: 2, name: 'Preprocessing', icon: Activity, tone: 'amber', ledgerLabel: 'Raw signals (newest first)' },
+    56→  { layer: 3, name: 'Cross-Domain Analysis', icon: GitBranch, tone: 'violet', ledgerLabel: 'Inter-domain links' },
+    57→  { layer: 4, name: 'Discovery', icon: Boxes, tone: 'violet', ledgerLabel: 'Hypotheses (newest first)' },
+    58→  { layer: 5, name: 'Breakthrough', icon: Trophy, tone: 'emerald', ledgerLabel: 'Synthesized solutions' },
+    59→  { layer: 6, name: 'Self-Optimization', icon: Wrench, tone: 'emerald', ledgerLabel: 'Optimization telemetry' },
+    60→  { layer: 7, name: 'Governance', icon: ShieldCheck, tone: 'amber', ledgerLabel: 'Review queue (pendings pinned first)' },
+    61→  { layer: 8, name: 'Insight Output', icon: ScrollText, tone: 'rose', ledgerLabel: 'Published reports' },
+    62→];
+    63→
+    64→const TONE_BORDER: Record<MeterTone, string> = {
+    65→  emerald: 'border-emerald-500/50 bg-emerald-500/10',
+    66→  amber: 'border-amber-500/50 bg-amber-500/10',
+    67→  rose: 'border-rose-500/50 bg-rose-500/10',
+    68→  violet: 'border-violet-500/50 bg-violet-500/10',
+    69→  teal: 'border-teal-500/50 bg-teal-500/10',
+    70→  zinc: 'border-zinc-700 bg-zinc-800/60',
+    71→};
+    72→
+    73→const TONE_TEXT: Record<MeterTone, string> = {
+    74→  emerald: 'text-emerald-400',
+    75→  amber: 'text-amber-400',
+    76→  rose: 'text-rose-400',
+    77→  violet: 'text-violet-400',
+    78→  teal: 'text-teal-400',
+    79→  zinc: 'text-zinc-400',
+    80→};
+    81→
+    82→const TONE_STROKE: Record<MeterTone, string> = {
+    83→  emerald: '#10b981',
+    84→  amber: '#f59e0b',
+    85→  rose: '#f43f5e',
+    86→  violet: '#8b5cf6',
+    87→  teal: '#14b8a6',
+    88→  zinc: '#a1a1aa',
+    89→};
+    90→
+    91→const TONE_GLOW: Record<MeterTone, string> = {
+    92→  emerald: 'shadow-[0_0_16px_-6px_rgba(16,185,129,0.55)]',
+    93→  amber: 'shadow-[0_0_16px_-6px_rgba(245,158,11,0.55)]',
+    94→  rose: 'shadow-[0_0_16px_-6px_rgba(244,63,94,0.55)]',
+    95→  violet: 'shadow-[0_0_16px_-6px_rgba(139,92,246,0.55)]',
+    96→  teal: 'shadow-[0_0_16px_-6px_rgba(20,184,166,0.55)]',
+    97→  zinc: '',
+    98→};
+    99→
+   100→// ─── Sparkline (pure SVG, non-scaling stroke, gradient area) ─────────────────
+   101→
+   102→function Sparkline({
+   103→  series,
+   104→  tone,
+   105→  height = 72,
+   106→  label,
+   107→  sub,
+   108→}: {
+   109→  series: number[];
+   110→  tone: MeterTone;
+   111→  height?: number;
+   112→  label: string;
+   113→  sub?: string;
+   114→}) {
+   115→  const W = 300;
+   116→  const H = height;
+   117→  const color = TONE_STROKE[tone];
+   118→  const gradId = `lw-spark-${tone}-${label.replace(/[^a-z0-9]/gi, '')}`;
+   119→
+   120→  if (series.length < 2) {
+   121→    return (
+   122→      <div className="flex h-[72px] items-center justify-center rounded-lg border border-dashed border-zinc-800 text-[11px] text-zinc-600">
+   123→        history accumulating — need ≥2 cycles
+   124→      </div>
+   125→    );
+   126→  }
+   127→
+   128→  const max = Math.max(...series, 0.0001);
+   129→  const min = Math.min(...series);
+   130→  const span = max - min || 1;
+   131→  const step = W / (series.length - 1);
+   132→  const pts = series.map((v, i) => [i * step, H - 6 - ((v - min) / span) * (H - 14)] as const);
+   133→  const line = pts.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' ');
+   134→  const area = `0,${H} ${line} ${W},${H}`;
+   135→  const last = pts[pts.length - 1];
+   136→
+   137→  return (
+   138→    <div className="relative">
+   139→      <svg
+   140→        viewBox={`0 0 ${W} ${H}`}
+   141→        preserveAspectRatio="none"
+   142→        className="h-[72px] w-full"
+   143→        role="img"
+   144→        aria-label={`${label} — ${series.length} points, latest ${fmtNum(series[series.length - 1], series[series.length - 1] < 10 ? 2 : 0)}`}
+   145→      >
+   146→        <defs>
+   147→          <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+   148→            <stop offset="0%" stopColor={color} stopOpacity="0.35" />
+   149→            <stop offset="100%" stopColor={color} stopOpacity="0" />
+   150→          </linearGradient>
+   151→        </defs>
+   152→        {/* min/max guide rails */}
+   153→        <line x1="0" y1="6" x2={W} y2="6" stroke="#3f3f46" strokeDasharray="3 5" strokeWidth="1" vectorEffect="non-scaling-stroke" />
+   154→        <line x1="0" y1={H - 6} x2={W} y2={H - 6} stroke="#3f3f46" strokeDasharray="3 5" strokeWidth="1" vectorEffect="non-scaling-stroke" />
+   155→        <polygon points={area} fill={`url(#${gradId})`} />
+   156→        <polyline
+   157→          points={line}
+   158→          fill="none"
+   159→          stroke={color}
+   160→          strokeWidth="1.75"
+   161→          strokeLinejoin="round"
+   162→          strokeLinecap="round"
+   163→          vectorEffect="non-scaling-stroke"
+   164→        />
+   165→        {/* last-point marker (r fixed — preserveAspectRatio=none would distort circles) */}
+   166→        <circle cx={last[0]} cy={last[1]} r="3" fill={color} />
+   167→      </svg>
+   168→      <div className="pointer-events-none absolute inset-x-0 -top-0.5 flex items-center justify-between font-mono text-[9px] tabular-nums text-zinc-600">
+   169→        <span>{sub ?? `max ${fmtNum(max, max < 10 ? 2 : 0)}`}</span>
+   170→        <span className={TONE_TEXT[tone]}>{fmtNum(series[series.length - 1], series[series.length - 1] < 10 ? 2 : 0)}</span>
+   171→      </div>
+   172→    </div>
+   173→  );
+   174→}
+   175→
+   176→// ─── Per-layer series (honest data from the payload) ─────────────────────────
+   177→
+   178→function layerSeries(
+   179→  layer: number,
+   180→  data: EngineStatePayload,
+   181→): { label: string; series: number[]; tone: MeterTone; sub?: string } | null {
+   182→  const spc = data.analytics?.signalsPerCycle ?? [];
+   183→  switch (layer) {
+   184→    case 1:
+   185→      return spc.length
+   186→        ? { label: 'signals / cycle', series: spc.map((p) => p.signals), tone: 'teal' as const }
+   187→        : null;
+   188→    case 2:
+   189→      return spc.length
+   190→        ? { label: 'anomalies / cycle', series: spc.map((p) => p.anomalies), tone: 'amber' as const, sub: `≥ ${0.75} score` }
+   191→        : null;
+   192→    case 3: {
+   193→      // Correlations carry no cycle — render the strength spectrum instead.
+   194→      const bands = [0, 0, 0];
+   195→      for (const c of data.correlations) {
+   196→        if (c.strength >= 0.8) bands[2]++;
+   197→        else if (c.strength >= 0.6) bands[1]++;
+   198→        else bands[0]++;
+   199→      }
+   200→      return { label: 'link strength spectrum', series: bands, tone: 'violet' as const, sub: '0.4–0.6 / 0.6–0.8 / 0.8+' };
+   201→    }
+   202→    case 4: {
+   203→      const byCycle = new Map<number, number>();
+   204→      for (const h of data.hypotheses) byCycle.set(h.cycle, (byCycle.get(h.cycle) ?? 0) + 1);
+   205→      const series = [...byCycle.entries()].sort((a, b) => a[0] - b[0]).map(([, n]) => n);
+   206→      return series.length >= 2 ? { label: 'hypotheses / cycle', series, tone: 'violet' as const } : null;
+   207→    }
+   208→    case 5: {
+   209→      const byCycle = new Map<number, number>();
+   210→      for (const b of data.breakthroughs) byCycle.set(b.cycle, (byCycle.get(b.cycle) ?? 0) + 1);
+   211→      const series = [...byCycle.entries()].sort((a, b) => a[0] - b[0]).map(([, n]) => n);
+   212→      return series.length >= 2 ? { label: 'breakthroughs / cycle', series, tone: 'emerald' as const } : null;
+   213→    }
+   214→    case 6:
+   215→      return (data.analytics?.optimizationTrend ?? []).length >= 2
+   216→        ? {
+   217→            label: 'success rate trend',
+   218→            series: data.analytics.optimizationTrend.map((t) => Math.round(t.successRate * 100)),
+   219→            tone: 'emerald' as const,
+   220→            sub: '% validated',
+   221→          }
+   222→        : null;
+   223→    case 7: {
+   224→      const byCycle = new Map<number, number>();
+   225→      for (const g of data.governance) byCycle.set(g.cycle, (byCycle.get(g.cycle) ?? 0) + 1);
+   226→      const series = [...byCycle.entries()].sort((a, b) => a[0] - b[0]).map(([, n]) => n);
+   227→      return series.length >= 2 ? { label: 'checks / cycle', series, tone: 'amber' as const } : null;
+   228→    }
+   229→    default: {
+   230→      const byCycle = new Map<number, number>();
+   231→      for (const r of data.reports) byCycle.set(r.cycle, (byCycle.get(r.cycle) ?? 0) + 1);
+   232→      const series = [...byCycle.entries()].sort((a, b) => a[0] - b[0]).map(([, n]) => n);
+   233→      return series.length >= 2 ? { label: 'reports / cycle', series, tone: 'rose' as const } : null;
+   234→    }
+   235→  }
+   236→}
+   237→
+   238→// ─── Entity ledger rows ──────────────────────────────────────────────────────
+   239→
+   240→const ROW =
+   241→  'flex items-center gap-2 rounded-md border border-zinc-800/70 bg-zinc-950/40 px-2.5 py-1.5 transition-colors duration-200 hover:border-zinc-700 hover:bg-zinc-900/60';
+   242→
+   243→function CycleChip({ cycle }: { cycle: number | null }) {
+   244→  if (cycle === null || cycle === undefined) return null;
+   245→  return (
+   246→    <span className="shrink-0 font-mono text-[10px] tabular-nums text-zinc-600">
+   247→      c{String(cycle).padStart(3, '0')}
+   248→    </span>
+   249→  );
+   250→}
+   251→
+   252→function Chip({
+   253→  children,
+   254→  className,
+   255→  title,
+   256→}: {
+   257→  children: React.ReactNode;
+   258→  className?: string;
+   259→  title?: string;
+   260→}) {
+   261→  return (
+   262→    <span
+   263→      title={title}
+   264→      className={cn(
+   265→        'shrink-0 rounded border px-1.5 py-0 font-mono text-[9px] uppercase tracking-wider tabular-nums',
+   266→        className,
+   267→      )}
+   268→    >
+   269→      {children}
+   270→    </span>
+   271→  );
+   272→}
+   273→
+   274→function StreamRows({ data }: { data: EngineStatePayload }) {
+   275→  return (
+   276→    <>
+   277→      {data.streams.map((s) => (
+   278→        <li key={s.id} className={ROW}>
+   279→          <span className={cn('size-1.5 shrink-0 rounded-full', s.status === 'active' ? 'bg-teal-400' : 'bg-zinc-600')} aria-hidden />
+   280→          <span className="min-w-0 flex-1 truncate text-xs text-zinc-200">{s.name}</span>
+   281→          <Chip className="border-zinc-700 bg-zinc-800/60 text-zinc-400">{s.category}</Chip>
+   282→          <span className="hidden w-20 shrink-0 sm:block">
+   283→            <Meter value={s.health} tone={s.health >= 0.6 ? 'teal' : s.health >= 0.35 ? 'amber' : 'rose'} height="h-1" />
+   284→          </span>
+   285→          <span className="w-14 shrink-0 text-right font-mono text-[10px] tabular-nums text-zinc-500">
+   286→            {fmtNum(s.itemsIngested)} in
+   287→          </span>
+   288→        </li>
+   289→      ))}
+   290→    </>
+   291→  );
+   292→}
+   293→
+   294→function SignalRows({ signals }: { signals: Signal[] }) {
+   295→  return (
+   296→    <>
+   297→      {signals.map((s) => (
+   298→        <li key={s.id} className={ROW}>
+   299→          <span className="min-w-0 flex-1 truncate text-xs text-zinc-200">{s.title}</span>
+   300→          <span className="hidden shrink-0 font-mono text-[10px] text-zinc-600 md:inline">{s.streamName}</span>
+   301→          <Chip className={s.anomalyScore >= 0.75 ? 'border-rose-500/40 bg-rose-500/10 text-rose-300' : 'border-zinc-700 bg-zinc-800/60 text-zinc-400'}>
+   302→            anom {s.anomalyScore.toFixed(2)}
+   303→          </Chip>
+   304→          <Chip className="border-teal-500/40 bg-teal-500/10 text-teal-300">nov {s.noveltyScore.toFixed(2)}</Chip>
+   305→          <CycleChip cycle={s.cycle} />
+   306→          <span className="hidden w-16 shrink-0 text-right font-mono text-[9px] text-zinc-600 sm:inline">{timeAgo(s.createdAt)}</span>
+   307→        </li>
+   308→      ))}
+   309→    </>
+   310→  );
+   311→}
+   312→
+   313→function LinkRows({ data }: { data: EngineStatePayload }) {
+   314→  const links = [...data.correlations].sort((a, b) => b.strength - a.strength);
+   315→  return (
+   316→    <>
+   317→      {links.map((c) => (
+   318→        <li key={c.id} className={ROW}>
+   319→          <span className="min-w-0 flex-1 truncate text-xs text-zinc-200">
+   320→            <span className="text-violet-300">{c.sourceDomain}</span>
+   321→            <span className="text-zinc-600"> ↔ </span>
+   322→            <span className="text-teal-300">{c.targetDomain}</span>
+   323→          </span>
+   324→          <span className="hidden min-w-0 flex-1 truncate text-[11px] text-zinc-500 lg:block">{c.mechanism}</span>
+   325→          <span className="w-16 shrink-0">
+   326→            <Meter value={c.strength} tone="violet" height="h-1" />
+   327→          </span>
+   328→          <Chip className="border-violet-500/40 bg-violet-500/10 text-violet-300">str {c.strength.toFixed(2)}</Chip>
+   329→        </li>
+   330→      ))}
+   331→      <li className="px-2.5 pt-1 font-mono text-[10px] text-zinc-600" aria-hidden>
+   332→        {links.length} links · strongest first
+   333→      </li>
+   334→    </>
+   335→  );
+   336→}
+   337→
+   338→function HypothesisRows({ hypotheses }: { hypotheses: Hypothesis[] }) {
+   339→  return (
+   340→    <>
+   341→      {hypotheses.map((h) => (
+   342→        <li key={h.id} className={ROW}>
+   343→          <span className="min-w-0 flex-1 truncate text-xs text-zinc-200">{h.title}</span>
+   344→          <Chip className={hypothesisStatusClass(h.status)}>{h.status}</Chip>
+   345→          <Chip className="border-violet-500/40 bg-violet-500/10 text-violet-300">N {h.novelty.toFixed(2)}</Chip>
+   346→          <Chip className="border-teal-500/40 bg-teal-500/10 text-teal-300">I {h.impact.toFixed(2)}</Chip>
+   347→          <span className="hidden shrink-0 font-mono text-[9px] uppercase tracking-wider text-zinc-600 md:inline">
+   348→            {h.generator === 'llm' ? 'LLM' : 'TPL'}
+   349→          </span>
+   350→          <CycleChip cycle={h.cycle} />
+   351→        </li>
+   352→      ))}
+   353→    </>
+   354→  );
+   355→}
+   356→
+   357→function BreakthroughRows({ breakthroughs }: { breakthroughs: Breakthrough[] }) {
+   358→  return (
+   359→    <>
+   360→      {breakthroughs.map((b) => {
+   361→        const meta = solutionMeta(b.solutionType);
+   362→        const Icon = meta.icon;
+   363→        return (
+   364→          <li key={b.id} className={ROW}>
+   365→            <Icon className="size-3.5 shrink-0 text-emerald-400" aria-hidden />
+   366→            <span className="min-w-0 flex-1 truncate text-xs text-zinc-200">{b.title}</span>
+   367→            <Chip className="border-emerald-500/40 bg-emerald-500/10 text-emerald-300">imp {b.impactRank.toFixed(2)}</Chip>
+   368→            <Chip className={riskBadgeClass(b.riskScore)}>risk {b.riskScore.toFixed(2)}</Chip>
+   369→            <Chip className="border-zinc-700 bg-zinc-800/60 text-zinc-400">{b.status}</Chip>
+   370→            <CycleChip cycle={b.cycle} />
+   371→          </li>
+   372→        );
+   373→      })}
+   374→    </>
+   375→  );
+   376→}
+   377→
+   378→function OptimizationRows({ data }: { data: EngineStatePayload }) {
+   379→  const trend = (data.analytics?.optimizationTrend ?? []).slice().reverse();
+   380→  return (
+   381→    <>
+   382→      {trend.map((t) => (
+   383→        <li key={t.cycle} className={cn(ROW, 'font-mono text-[11px] tabular-nums')}>
+   384→          <span className="shrink-0 text-zinc-600">c{String(t.cycle).padStart(3, '0')}</span>
+   385→          <span className="flex-1" aria-hidden />
+   386→          <Chip className="border-emerald-500/40 bg-emerald-500/10 text-emerald-300">SR {fmtScore(t.successRate, 0)}</Chip>
+   387→          <Chip className="border-teal-500/40 bg-teal-500/10 text-teal-300">NOV {fmtScore(t.avgNovelty, 2)}</Chip>
+   388→        </li>
+   389→      ))}
+   390→    </>
+   391→  );
+   392→}
+   393→
+   394→function isAutoTriaged(g: GovernanceCheck): boolean {
+   395→  return typeof g.notes === 'string' && g.notes.startsWith('AUTO-TRIAGE');
+   396→}
+   397→
+   398→function decisionChip(g: GovernanceCheck): { label: string; cls: string } {
+   399→  if (g.reviewDecision === 'approved') {
+   400→    return isAutoTriaged(g)
+   401→      ? { label: 'auto ✓', cls: 'border-amber-500/40 bg-amber-500/10 text-amber-300' }
+   402→      : { label: 'approved ✓', cls: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300' };
+   403→  }
+   404→  if (g.reviewDecision === 'rejected') {
+   405→    return { label: 'rejected ✗', cls: 'border-rose-500/40 bg-rose-500/10 text-rose-300' };
+   406→  }
+   407→  return { label: 'pending…', cls: 'border-amber-500/40 bg-amber-500/10 text-amber-300' };
+   408→}
+   409→
+   410→function GovernanceRows({ governance }: { governance: GovernanceCheck[] }) {
+   411→  // Pendings pinned first (oldest breach at top), then decided rows newest-first.
+   412→  const pend = governance.filter((g) => g.humanReview && !g.reviewDecision).slice().reverse();
+   413→  const decided = governance.filter((g) => !g.humanReview || g.reviewDecision);
+   414→  const ordered = [...pend, ...decided];
+   415→  return (
+   416→    <>
+   417→      {ordered.map((g) => {
+   418→        const d = decisionChip(g);
+   419→        return (
+   420→          <li key={g.id} className={ROW}>
+   421→            <span className="min-w-0 flex-1 truncate text-xs text-zinc-200">{g.targetTitle}</span>
+   422→            <Chip className={riskBadgeClass(g.riskScore)}>risk {g.riskScore.toFixed(2)}</Chip>
+   423→            <Chip className={d.cls}>{d.label}</Chip>
+   424→            {g.ethicalFlags.length > 0 ? (
+   425→              <Chip className="border-rose-500/40 bg-rose-500/10 text-rose-300" title={g.ethicalFlags.join(', ')}>
+   426→                ⚑ {g.ethicalFlags.length}
+   427→              </Chip>
+   428→            ) : null}
+   429→            <CycleChip cycle={g.cycle} />
+   430→          </li>
+   431→        );
+   432→      })}
+   433→    </>
+   434→  );
+   435→}
+   436→
+   437→function ReportRows({ reports }: { reports: InsightReport[] }) {
+   438→  return (
+   439→    <>
+   440→      {reports.map((r) => (
+   441→        <li key={r.id} className={ROW}>
+   442→          <span className="min-w-0 flex-1 truncate text-xs text-zinc-200">{r.title}</span>
+   443→          <Chip
+   444→            className={
+   445→              r.reportType === 'alert'
+   446→                ? 'border-rose-500/40 bg-rose-500/10 text-rose-300'
+   447→                : r.reportType === 'deep-dive'
+   448→                  ? 'border-violet-500/40 bg-violet-500/10 text-violet-300'
+   449→                  : 'border-zinc-700 bg-zinc-800/60 text-zinc-400'
+   450→            }
+   451→          >
+   452→            {r.reportType}
+   453→          </Chip>
+   454→          <CycleChip cycle={r.cycle} />
+   455→          <span className="hidden w-16 shrink-0 text-right font-mono text-[9px] text-zinc-600 sm:inline">{timeAgo(r.createdAt)}</span>
+   456→        </li>
+   457→      ))}
+   458→    </>
+   459→  );
+   460→}
+   461→
+   462→// ─── Citation web (L4): evidence signals → hypotheses ────────────────────────
+   463→
+   464→const CITE_ROW_H = 26;
+   465→const CITE_W = 640;
+   466→const CITE_MAX_SIGNALS = 12;
+   467→const CITE_MAX_HYPS = 7;
+   468→
+   469→function clipTitle(t: string, max = 26): string {
+   470→  return t.length > max ? `${t.slice(0, max)}…` : t;
+   471→}
+   472→
+   473→/**
+   474→ * Bipartite citation web for Layer 4: cited evidence signals (left, teal,
+   475→ * ranked by how many of the rendered hypotheses cite them) vs the newest
+   476→ * hypotheses (right, violet). Bezier edges = one citation each. Pure SVG,
+   477→ * horizontally scrollable on narrow screens.
+   478→ */
+   479→function CitationWeb({ data }: { data: EngineStatePayload }) {
+   480→  const hypos = data.hypotheses.slice(0, CITE_MAX_HYPS);
+   481→  if (hypos.length === 0) return null;
+   482→
+   483→  const citeCount = new Map<string, number>();
+   484→  for (const h of hypos) {
+   485→    for (const t of h.sourceSignals ?? []) citeCount.set(t, (citeCount.get(t) ?? 0) + 1);
+   486→  }
+   487→  const ranked = [...citeCount.entries()].sort(
+   488→    (a, b) => b[1] - a[1] || a[0].localeCompare(b[0]),
+   489→  );
+   490→  const shown = ranked.slice(0, CITE_MAX_SIGNALS);
+   491→  const overflow = ranked.length - shown.length;
+   492→  const signalIndex = new Map(shown.map(([t], i) => [t, i]));
+   493→
+   494→  const leftCy = (i: number) => 10 + i * CITE_ROW_H;
+   495→  const rightCy = (i: number) => 10 + i * CITE_ROW_H;
+   496→  const rows = Math.max(shown.length, hypos.length);
+   497→  const H = rows * CITE_ROW_H + 14;
+   498→
+   499→  const edges: Array<{ key: string; d: string; tip: string }> = [];
+   500→  hypos.forEach((h, hi) => {
+   501→    for (const t of h.sourceSignals ?? []) {
+   502→      const si = signalIndex.get(t);
+   503→      if (si === undefined) continue;
+   504→      const x1 = 306;
+   505→      const y1 = leftCy(si);
+   506→      const x2 = 334;
+   507→      const y2 = rightCy(hi);
+   508→      const mx = (x1 + x2) / 2;
+   509→      edges.push({
+   510→        key: `${h.id}::${si}::${t.slice(0, 16)}`,
+   511→        d: `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`,
+   512→        tip: `${t} → ${h.title}`,
+   513→      });
+   514→    }
+   515→  });
+   516→
+   517→  return (
+   518→    <Panel
+   519→      title="Citation Web · Evidence → Hypotheses"
+   520→      icon={GitBranch}
+   521→      ariaLabel="Citation web — evidence signals to hypotheses"
+   522→      actions={
+   523→        <span className="font-mono text-[10px] uppercase tracking-wider text-zinc-500">
+   524→          {shown.length} signals · {hypos.length} hyps · {edges.length} edges
+   525→        </span>
+   526→      }
+   527→    >
+   528→      <div className="flex flex-wrap items-center gap-3 pb-2 font-mono text-[9px] uppercase tracking-wider text-zinc-600">
+   529→        <span className="flex items-center gap-1.5">
+   530→          <span className="size-2 rounded-sm border border-teal-500/40 bg-teal-500/10" aria-hidden /> cited signal
+   531→        </span>
+   532→        <span className="flex items-center gap-1.5">
+   533→          <span className="size-2 rounded-sm border border-violet-500/40 bg-violet-500/10" aria-hidden /> hypothesis
+   534→        </span>
+   535→        <span className="flex items-center gap-1.5">
+   536→          <svg width="18" height="6" aria-hidden>
+   537→            <path d="M 0 3 C 6 3, 12 3, 18 3" stroke="#8b5cf6" strokeWidth="1.5" fill="none" opacity="0.6" />
+   538→          </svg>
+   539→          citation
+   540→        </span>
+   541→      </div>
+   542→      <div className="mc-scroll overflow-x-auto">
+   543→        <svg
+   544→          viewBox={`0 0 ${CITE_W} ${H}`}
+   545→          className="w-full min-w-[560px]"
+   546→          role="img"
+   547→          aria-label={`Citation web: ${shown.length} evidence signals linked to ${hypos.length} hypotheses via ${edges.length} citations`}
+   548→        >
+   549→          {/* edges */}
+   550→          {edges.map((e) => (
+   551→            <path
+   552→              key={e.key}
+   553→              d={e.d}
+   554→              fill="none"
+   555→              stroke="#8b5cf6"
+   556→              strokeWidth="1.25"
+   557→              opacity="0.3"
+   558→              className="transition-opacity duration-200 hover:opacity-90"
+   559→            >
+   560→              <title>{e.tip}</title>
+   561→            </path>
+   562→          ))}
+   563→          {/* left nodes — cited signals */}
+   564→          {shown.map(([title], i) => {
+   565→            const y = leftCy(i);
+   566→            return (
+   567→              <g key={`sig-${i}`} className="cursor-default">
+   568→                <rect
+   569→                  x="2"
+   570→                  y={y - 9}
+   571→                  width="304"
+   572→                  height="18"
+   573→                  rx="4"
+   574→                  className="fill-zinc-950/80 stroke-teal-500/30 transition-colors duration-200 hover:stroke-teal-400/70"
+   575→                >
+   576→                  <title>{title}</title>
+   577→                </rect>
+   578→                <circle cx="10" cy={y} r="2" fill="#14b8a6" />
+   579→                <text x="17" y={y + 3.5} fontSize="10" fontFamily="ui-monospace, monospace" fill="#a1a1aa">
+   580→                  {clipTitle(title)}
+   581→                </text>
+   582→              </g>
+   583→            );
+   584→          })}
+   585→          {/* right nodes — hypotheses */}
+   586→          {hypos.map((h, i) => {
+   587→            const y = rightCy(i);
+   588→            return (
+   589→              <g key={h.id} className="cursor-default">
+   590→                <rect
+   591→                  x="334"
+   592→                  y={y - 9}
+   593→                  width="304"
+   594→                  height="18"
+   595→                  rx="4"
+   596→                  className="fill-zinc-950/80 stroke-violet-500/30 transition-colors duration-200 hover:stroke-violet-400/70"
+   597→                >
+   598→                  <title>{h.title}</title>
+   599→                </rect>
+   600→                <circle cx="342" cy={y} r="2" fill="#8b5cf6" />
+   601→                <text x="349" y={y + 3.5} fontSize="10" fontFamily="ui-monospace, monospace" fill="#d4d4d8">
+   602→                  {clipTitle(h.title)}
+   603→                </text>
+   604→              </g>
+   605→            );
+   606→          })}
+   607→        </svg>
+   608→      </div>
+   609→      {overflow > 0 ? (
+   610→        <p className="pt-1.5 font-mono text-[10px] text-zinc-600" aria-hidden>
+   611→          +{overflow} lower-cited signal{overflow === 1 ? '' : 's'} not rendered
+   612→        </p>
+   613→      ) : null}
+   614→    </Panel>
+   615→  );
+   616→}
+   617→
+   618→// ─── Main workspace ──────────────────────────────────────────────────────────
+   619→
+   620→function layerEntities(layer: number, data: EngineStatePayload): number {
+   621→  switch (layer) {
+   622→    case 1: return data.streams.length;
+   623→    case 2: return data.signals.length;
+   624→    case 3: return data.correlations.length;
+   625→    case 4: return data.hypotheses.length;
+   626→    case 5: return data.breakthroughs.length;
+   627→    case 6: return data.analytics?.optimizationTrend?.length ?? 0;
+   628→    case 7: return data.governance.length;
+   629→    default: return data.reports.length;
+   630→  }
+   631→}
+   632→
+   633→export function LayerWorkspace({ engine, data }: { engine: EngineInfo; data: EngineStatePayload }) {
+   634→  const [prefs, setPrefs] = usePreferences();
+   635→  const selected =
+   636→    typeof prefs.layerKey === 'number' && prefs.layerKey >= 1 && prefs.layerKey <= 8
+   637→      ? prefs.layerKey
+   638→      : 1;
+   639→
+   640→  const spec = LAYER_SPECS[selected - 1];
+   641→  const layerInfo: EngineLayer | undefined = engine.layers.find((l) => l.layer === selected);
+   642→  const spark = useMemo(() => layerSeries(selected, data), [selected, data]);
+   643→  const metricEntries = Object.entries(layerInfo?.metrics ?? {});
+   644→  const entityCount = layerEntities(selected, data);
+   645→  const SpecIcon = spec.icon;
+   646→
+   647→  return (
+   648→    <div className="flex min-w-0 flex-col gap-4" aria-label="Per-layer drilldown workspace">
+   649→      {/* Selector rail */}
+   650→      <div
+   651→        role="toolbar"
+   652→        aria-label="Select inference layer"
+   653→        className="mc-scroll flex gap-2 overflow-x-auto pb-1"
+   654→      >
+   655→        {LAYER_SPECS.map((s) => {
+   656→          const active = s.layer === selected;
+   657→          const count = layerEntities(s.layer, data);
+   658→          return (
+   659→            <button
+   660→              key={s.layer}
+   661→              type="button"
+   662→              onClick={() => setPrefs({ layerKey: s.layer })}
+   663→              aria-pressed={active}
+   664→              aria-label={`Layer ${s.layer}: ${s.name} — ${count} items`}
+   665→              className={cn(
+   666→                'group flex min-w-36 shrink-0 items-center gap-2.5 rounded-lg border px-3 py-2 text-left transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/60 min-h-11',
+   667→                active
+   668→                  ? cn('border-zinc-600 bg-zinc-800/80', TONE_GLOW[s.tone])
+   669→                  : 'border-zinc-800 bg-zinc-900/60 hover:border-zinc-700 hover:bg-zinc-800/50',
+   670→              )}
+   671→            >
+   672→              <span
+   673→                className={cn(
+   674→                  'flex size-7 shrink-0 items-center justify-center rounded-md border font-mono text-[11px] font-bold transition-colors',
+   675→                  active ? TONE_BORDER[s.tone] + ' ' + TONE_TEXT[s.tone] : 'border-zinc-700 bg-zinc-800 text-zinc-500',
+   676→                )}
+   677→              >
+   678→                L{s.layer}
+   679→              </span>
+   680→              <span className="min-w-0">
+   681→                <span className={cn('block truncate text-xs font-semibold', active ? 'text-zinc-100' : 'text-zinc-400')}>
+   682→                  {s.name}
+   683→                </span>
+   684→                <span className="block font-mono text-[10px] tabular-nums text-zinc-600">{count} items</span>
+   685→              </span>
+   686→            </button>
+   687→          );
+   688→        })}
+   689→      </div>
+   690→
+   691→      {/* L4 extra: citation web (evidence → hypotheses) */}
+   692→      {selected === 4 ? <CitationWeb data={data} /> : null}
+   693→
+   694→      {/* Workspace panel */}
+   695→      <motion.div
+   696→        key={`ws-${selected}`}
+   697→        initial={{ opacity: 0, y: 10 }}
+   698→        animate={{ opacity: 1, y: 0 }}
+   699→        transition={{ duration: 0.25, ease: 'easeOut' }}
+   700→      >
+   701→        <Panel
+   702→          title={`L${spec.layer} · ${spec.name}`}
+   703→          icon={SpecIcon}
+   704→          ariaLabel={`Layer ${spec.layer} workspace`}
+   705→          actions={
+   706→            <span className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-wider text-zinc-500">
+   707→              <span className={cn('size-1.5 rounded-full', layerInfo?.state === 'active' ? 'bg-emerald-400 mc-led' : layerInfo?.state === 'blocked' ? 'bg-rose-500' : 'bg-zinc-600')} aria-hidden />
+   708→              {layerInfo?.state ?? 'idle'}
+   709→              <span className="text-zinc-700" aria-hidden>·</span>
+   710→              <span className="tabular-nums">load {Math.round((layerInfo?.load ?? 0) * 100)}%</span>
+   711→            </span>
+   712→          }
+   713→        >
+   714→          <p className="text-sm leading-relaxed text-zinc-300">{layerInfo?.purpose ?? spec.name}</p>
+   715→
+   716→          {/* Metrics grid + sparkline */}
+   717→          <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
+   718→            <div>
+   719→              <h3 className="text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-500">
+   720→                Live metrics · cycle {String(engine.cycles).padStart(3, '0')}
+   721→              </h3>
+   722→              {metricEntries.length === 0 ? (
+   723→                <p className="mt-2 rounded-lg border border-dashed border-zinc-800 px-3 py-4 text-center text-[11px] text-zinc-600">
+   724→                  No metrics recorded for this layer yet
+   725→                </p>
+   726→              ) : (
+   727→                <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3">
+   728→                  {metricEntries.map(([key, value]) => (
+   729→                    <div key={key} className="rounded-lg border border-zinc-800 bg-zinc-950/60 px-3 py-2">
+   730→                      <p className="truncate text-[10px] uppercase tracking-wider text-zinc-500">{labelKey(key)}</p>
+   731→                      <p className="mt-0.5 font-mono text-sm font-medium tabular-nums text-zinc-200">
+   732→                        {fmtNum(value, Math.abs(value) < 10 ? 3 : 0)}
+   733→                      </p>
+   734→                    </div>
+   735→                  ))}
+   736→                </div>
+   737→              )}
+   738→              <div className="mt-3">
+   739→                <Meter value={layerInfo?.load ?? 0} tone={spec.tone} height="h-1.5" />
+   740→              </div>
+   741→            </div>
+   742→            <div className="min-w-0">
+   743→              <h3 className="text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-500">
+   744→                {spark ? spark.label : 'History'}
+   745→              </h3>
+   746→              <div className="mt-2">
+   747→                {spark ? (
+   748→                  <Sparkline series={spark.series} tone={spark.tone} label={spark.label} sub={spark.sub} />
+   749→                ) : (
+   750→                  <div className="flex h-[72px] items-center justify-center rounded-lg border border-dashed border-zinc-800 text-[11px] text-zinc-600">
+   751→                    history accumulating — need ≥2 cycles
+   752→                  </div>
+   753→                )}
+   754→              </div>
+   755→            </div>
+   756→          </div>
+   757→
+   758→          {/* Entity ledger */}
+   759→          <div className="mt-4">
+   760→            <div className="flex items-center justify-between">
+   761→              <h3 className="text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-500">
+   762→                {spec.ledgerLabel}
+   763→              </h3>
+   764→              <span className="font-mono text-[10px] tabular-nums text-zinc-600">{entityCount} rows</span>
+   765→            </div>
+   766→            <ul className="mc-scroll mt-2 max-h-96 space-y-1.5 overflow-y-auto pr-1">
+   767→              {entityCount === 0 ? (
+   768→                <EmptyState
+   769→                  icon={SpecIcon}
+   770→                  title="Layer not producing yet"
+   771→                  hint="Rows will appear here as soon as the engine records output for this layer."
+   772→                />
+   773→              ) : selected === 1 ? (
+   774→                <StreamRows data={data} />
+   775→              ) : selected === 2 ? (
+   776→                <SignalRows signals={data.signals} />
+   777→              ) : selected === 3 ? (
+   778→                <LinkRows data={data} />
+   779→              ) : selected === 4 ? (
+   780→                <HypothesisRows hypotheses={data.hypotheses} />
+   781→              ) : selected === 5 ? (
+   782→                <BreakthroughRows breakthroughs={data.breakthroughs} />
+   783→              ) : selected === 6 ? (
+   784→                <OptimizationRows data={data} />
+   785→              ) : selected === 7 ? (
+   786→                <GovernanceRows governance={data.governance} />
+   787→              ) : (
+   788→                <ReportRows reports={data.reports} />
+   789→              )}
+   790→            </ul>
+   791→          </div>
+   792→        </Panel>
+   793→      </motion.div>
+   794→
+   795→      {/* Hidden affordance: hint that selection syncs with the Layer Stack panel */}
+   796→      <p className="flex items-center gap-1.5 px-1 text-[10px] text-zinc-600" aria-hidden>
+   797→        <ChevronRight className="size-3" />
+   798→        selection follows you across the Layer Stack detail panel
+   799→      </p>
+   800→    </div>
+   801→  );
+   802→}
+   803→

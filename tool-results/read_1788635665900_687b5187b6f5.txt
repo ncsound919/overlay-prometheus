@@ -1,0 +1,739 @@
+     1→// ─── Engine content pools ────────────────────────────────────────────────────
+     2→// Rich, category-specific generators for scientific signals, hypotheses,
+     3→// cross-domain mechanisms, breakthrough synthesis and governance content.
+     4→// Everything is parameterized with randomized slots so content never repeats
+     5→// verbatim between cycles.
+     6→
+     7→import type {
+     8→  Counterfactual,
+     9→  SignalFeatures,
+    10→  SolutionType,
+    11→  Synthesis,
+    12→} from '@/lib/engine-types'
+    13→
+    14→// ─── Small random helpers ────────────────────────────────────────────────────
+    15→
+    16→export function rand(min: number, max: number): number {
+    17→  return min + Math.random() * (max - min)
+    18→}
+    19→
+    20→export function randInt(min: number, max: number): number {
+    21→  return Math.floor(rand(min, max + 1))
+    22→}
+    23→
+    24→export function pick<T>(arr: readonly T[]): T {
+    25→  return arr[Math.floor(Math.random() * arr.length)]
+    26→}
+    27→
+    28→export function chance(p: number): boolean {
+    29→  return Math.random() < p
+    30→}
+    31→
+    32→export function clamp01(v: number): number {
+    33→  if (Number.isNaN(v)) return 0
+    34→  return Math.min(1, Math.max(0, v))
+    35→}
+    36→
+    37→export function round2(v: number): number {
+    38→  return Math.round(v * 100) / 100
+    39→}
+    40→
+    41→export function round3(v: number): number {
+    42→  return Math.round(v * 1000) / 1000
+    43→}
+    44→
+    45→// ─── Categories ──────────────────────────────────────────────────────────────
+    46→
+    47→export const CATEGORIES = [
+    48→  'papers',
+    49→  'patents',
+    50→  'clinical',
+    51→  'markets',
+    52→  'biology',
+    53→  'physics',
+    54→  'chemistry',
+    55→  'economics',
+    56→  'sensors',
+    57→  'simulation',
+    58→] as const
+    59→
+    60→export type Category = (typeof CATEGORIES)[number]
+    61→
+    62→export function isCategory(v: string): v is Category {
+    63→  return (CATEGORIES as readonly string[]).includes(v)
+    64→}
+    65→
+    66→// ─── Signal generation (Layer 1 + feature scoring Layer 2) ───────────────────
+    67→
+    68→export interface GeneratedSignal {
+    69→  title: string
+    70→  content: string
+    71→  features: SignalFeatures
+    72→  anomalyScore: number
+    73→  noveltyScore: number
+    74→  promoted: boolean
+    75→}
+    76→
+    77→// Heavy-tail anomaly distribution: ~15% of signals exceed 0.75.
+    78→function drawAnomalyScore(): number {
+    79→  return chance(0.85) ? clamp01(Math.random() * 0.72) : clamp01(0.75 + Math.random() * 0.25)
+    80→}
+    81→
+    82→function drawFeatures(anomaly: number): SignalFeatures {
+    83→  return {
+    84→    // entropy/gradient correlate positively with anomaly
+    85→    entropy: round3(clamp01(0.25 + anomaly * 0.55 + rand(-0.12, 0.12))),
+    86→    periodicity: round3(clamp01(rand(0.05, 0.6) - anomaly * 0.25)),
+    87→    gradient: round3(clamp01(0.1 + anomaly * 0.7 + rand(-0.1, 0.1))),
+    88→    dimensionality: randInt(2, 17),
+    89→  }
+    90→}
+    91→
+    92→function drawNoveltyScore(anomaly: number): number {
+    93→  return round3(clamp01(0.15 + Math.random() * 0.55 + anomaly * 0.3))
+    94→}
+    95→
+    96→const MATERIALS = [
+    97→  'twisted bilayer graphene',
+    98→  'trilayer WTe₂',
+    99→  'kagome superlattice AV₃Sb₅',
+   100→  'cuprate thin film Bi-2212',
+   101→  'moiré TaSe₂',
+   102→  'hybrid perovskite lattice',
+   103→  'topological insulator Bi₂Se₃',
+   104→  'nickelate superconductor La₃Ni₂O₇',
+   105→] as const
+   106→
+   107→const METHODS = [
+   108→  'physics-informed neural operator',
+   109→  'causal deconvolution pipeline',
+   110→  'Bayesian experimental design',
+   111→  'self-supervised spectroscopy',
+   112→  'diffusion-transformer surrogate',
+   113→  'quantum approximate diagonalization',
+   114→] as const
+   115→
+   116→const MECHANISM_DEVICES = [
+   117→  'electrostatic actuator array',
+   118→  'phase-change memory cell',
+   119→  'microfluidic droplet router',
+   120→  'solid-state LiDAR pixel',
+   121→  'tunable metamaterial antenna',
+   122→  'piezoelectric energy harvester',
+   123→] as const
+   124→
+   125→const APPLICATIONS = [
+   126→  'autonomous navigation',
+   127→  'continuous biomanufacturing',
+   128→  'grid-scale storage',
+   129→  'satellite thermal regulation',
+   130→  'closed-loop drug delivery',
+   131→  'subsea pipeline inspection',
+   132→] as const
+   133→
+   134→const DRUGS = [
+   135→  'compound ATR-441',
+   136→  'monoclonal antibody VXN-208',
+   137→  'small-molecule inhibitor KRAS-G12C-9b',
+   138→  'bispecific engager T-cell-7',
+   139→  'antisense oligo AKCE-22',
+   140→] as const
+   141→
+   142→const BIOMARKERS = [
+   143→  'IL-6 trajectory',
+   144→  'ctDNA fraction',
+   145→  'phosphorylated pERK drift',
+   146→  'gut-microbiome entropy index',
+   147→  'neurofilament light chain',
+   148→] as const
+   149→
+   150→const PATHWAYS = ['JAK-STAT', 'Wnt/β-catenin', 'complement cascade', 'autophagy', 'Hippo-YAP'] as const
+   151→
+   152→const SECTORS = [
+   153→  'semicap',
+   154→  'agri-futures',
+   155→  'long-duration credit',
+   156→  'emerging-market FX',
+   157→  'nuclear-utility equities',
+   158→  'shipping derivatives',
+   159→] as const
+   160→
+   161→const TICKERS = ['QNTX', 'VLRM', 'OSCR', 'HXMT', 'TRDN', 'ZYNE', 'ARGX'] as const
+   162→
+   163→const ORFS = ['ORF-17', 'ORF-42', 'ORF-88', 'ORF-133'] as const
+   164→const GENES = ['KLF-4', 'ATP5MC1', 'lncRNA HIX-9', 'PRDM-16', 'SIRP-α'] as const
+   165→const PROCESSES = [
+   166→  'chromatin remodeling',
+   167→  'mitochondrial fission',
+   168→  'axonal guidance',
+   169→  'quorum sensing',
+   170→  'autophagic flux',
+   171→] as const
+   172→const CELLTYPES = [
+   173→  'astrocyte-like progenitors',
+   174→  'enteroendocrine cells',
+   175→  'dendritic mimics',
+   176→  'myo-fibroblasts',
+   177→] as const
+   178→const ENZYMES = [
+   179→  'halogenase',
+   180→  'transposase',
+   181→  'lanthipeptide synthetase',
+   182→  'oxygen-tolerant hydrogenase',
+   183→] as const
+   184→
+   185→const DETECTORS = [
+   186→  'LHCb forward region',
+   187→  'CMS endcap',
+   188→  'IceCube strings 41–58',
+   189→  'muon g-2 storage ring',
+   190→  'JET divertor',
+   191→  'LIGO Hanford interferometer',
+   192→] as const
+   193→const CHANNELS = ['dilepton', 'missing-energy', 'rare-kaon', 'gluon-fusion', 'flavor-violating'] as const
+   194→
+   195→const METALS = ['Pd', 'Ni', 'Cu', 'Fe', 'Ir', 'Ru'] as const
+   196→const LIGANDS = ['NHC-L7', 'bipyridyl-B3', 'salen analog S2', 'phosphine-P9'] as const
+   197→const REACTIONS = [
+   198→  'enantioselective C–H activation',
+   199→  'atmospheric CO₂ reduction',
+   200→  'aza-Cope rearrangement',
+   201→  'electrochemical nitrogen fixation',
+   202→  'ring-opening polymerization',
+   203→] as const
+   204→const INTERMEDIATES = ['σ-alkyl', 'ketenylidene', 'radical cation', 'metallacyclobutane'] as const
+   205→
+   206→const INDICATORS = [
+   207→  'pass-through elasticity',
+   208→  'Beveridge slope',
+   209→  'Phillips-curve slope',
+   210→  'term premium',
+   211→  'wealth-effect coefficient',
+   212→] as const
+   213→const REGIONS = [
+   214→  'euro-area periphery',
+   215→  'Gulf states',
+   216→  'Mekong basin economies',
+   217→  'US interior metros',
+   218→  'Andean trade bloc',
+   219→] as const
+   220→
+   221→const SENSOR_SITES = ['node cluster NW-12', 'corridor E-07', 'basin C-44', 'array segment S-91'] as const
+   222→const SENSOR_MODALITIES = [
+   223→  'thermal drift',
+   224→  'strain anomaly',
+   225→  'acoustic signature',
+   226→  'vibration spectrum shift',
+   227→  'CO₂ flux inversion',
+   228→] as const
+   229→
+   230→const SIM_BEHAVIORS = [
+   231→  'emergent coordination',
+   232→  'speciation events',
+   233→  'cartel formation',
+   234→  'migration waves',
+   235→  'norm collapse',
+   236→] as const
+   237→const SIM_PARAMS = ['agent density', 'signal latency', 'mutation rate', 'reward dispersion'] as const
+   238→
+   239→type SignalTemplate = () => { title: string; content: string }
+   240→
+   241→const SIGNAL_TEMPLATES: Record<Category, readonly SignalTemplate[]> = {
+   242→  papers: [
+   243→    () => {
+   244→      const mat = pick(MATERIALS)
+   245→      return {
+   246→        title: `Anomalous superconductivity onset in ${mat} near ${rand(1.2, 94).toFixed(1)} K`,
+   247→        content: `Preprint reports a ${rand(8, 40).toFixed(0)}% resistive drop deviating ${rand(2.2, 6.1).toFixed(1)}σ from BCS expectations. Replication attempts in ${randInt(2, 7)} labs are pending; raw traces show ${pick(['hysteresis', 'telegraph noise', 'metastable plateaus'])} above the transition.`,
+   248→      }
+   249→    },
+   250→    () => {
+   251→      const mat = pick(MATERIALS)
+   252→      return {
+   253→        title: `Topological phase switching in ${mat} under ${rand(0.4, 14).toFixed(1)} T pulsed fields`,
+   254→        content: `Authors observe Berry-curvature inversion signatures persisting ${rand(0.2, 9).toFixed(1)} ns after field quench. The reported channel selectivity (≥${rand(71, 96).toFixed(0)}%) contradicts two prior null results.`,
+   255→      }
+   256→    },
+   257→    () => ({
+   258→      title: `Scaling-law violation in ${pick(['phonon drag', 'exciton diffusion', 'spin-lattice relaxation'])} across ${randInt(3, 9)} regimes`,
+   259→      content: `Fitted exponents drift monotonically from ${rand(0.31, 0.55).toFixed(2)} to ${rand(0.61, 0.88).toFixed(2)} with sample age. Supplementary data hint at ${pick(['ultralow-frequency modes', 'interface disorder coupling', 'nonergodic basins'])} as driver.`,
+   260→    }),
+   261→    () => ({
+   262→      title: `Room-temperature coherence signatures in ${pick(MATERIALS)} via ${pick(METHODS)}`,
+   263→      content: `Coherence lifetime estimates reach ${rand(11, 340).toFixed(0)} ps at 298 K — ${rand(2, 12).toFixed(0)}× prior ceiling. Independent calorimetry is consistent, though the ${pick(['pump polarization dependence', 'thickness scaling', 'isotope response'])} remains unexplained.`,
+   264→    }),
+   265→    () => ({
+   266→      title: `Unexpected symmetry breaking in ${pick(MATERIALS)} lattices at ${rand(0.4, 3.8).toFixed(1)}% strain`,
+   267→      content: `X-ray nanodiffraction reveals a ${pick(['chiral', 'nematic', 'stripe'])} order parameter emerging below ${rand(20, 120).toFixed(0)} K. Group-theoretic analysis permits the phase only if a ${pick(['hidden quadrupole', 'orbital current loop', 'edge mode condensate'])} exists.`,
+   268→    }),
+   269→  ],
+   270→  patents: [
+   271→    () => ({
+   272→      title: `Adaptive ${pick(MECHANISM_DEVICES)} for ${pick(APPLICATIONS)}`,
+   273→      content: `Filing claims a self-tuning controller achieving ${rand(12, 60).toFixed(0)}% latency reduction versus fixed-baseline designs. Examiner objections cite ${randInt(1, 4)} prior-art combinations; inventors added a ${pick(['drift-compensating', 'fail-safe bypass', 'energy-harvesting'])} sub-circuit.`,
+   274→    }),
+   275→    () => ({
+   276→      title: `Self-calibrating ${pick(MECHANISM_DEVICES)} with ${rand(3, 30).toFixed(0)}% drift compensation`,
+   277→      content: `Embedded reference loop corrects gain wander every ${rand(40, 900).toFixed(0)} ms without external calibration. Test data report MTTF improvements of ${rand(1.4, 4.2).toFixed(1)}× in ${pick(['high-humidity', 'high-vibration', 'radiation-dense'])} environments.`,
+   278→    }),
+   279→    () => ({
+   280→      title: `Method for ${pick(APPLICATIONS)} using closed-loop ${pick(MECHANISM_DEVICES)} feedback`,
+   281→      content: `Method claims describe a ${randInt(2, 5)}-stage pipeline with ${pick(['federated', 'on-sensor', 'event-triggered'])} inference. Benchmark annexes show throughput of ${randInt(4, 90)}k decisions/h at ${rand(94, 99.9).toFixed(1)}% precision.`,
+   282→    }),
+   283→  ],
+   284→  clinical: [
+   285→    () => ({
+   286→      title: `Phase ${pick(['Ib', 'II', 'IIa'])} trial: ${pick(DRUGS)} shows ${pick(['durable response', 'progression-free survival gain', 'rapid biomarker normalization'])} in n=${randInt(38, 260)} cohort`,
+   287→      content: `Primary endpoint met with hazard ratio ${rand(0.52, 0.81).toFixed(2)} (p=${rand(0.001, 0.04).toFixed(3)}). Grade ≥3 events at ${rand(4, 19).toFixed(1)}%; independent monitor flagged ${pick(['hepatic', 'hematologic', 'cardiac'])} signals in one arm.`,
+   288→    }),
+   289→    () => ({
+   290→      title: `Biomarker ${pick(BIOMARKERS)} predicts ${pick(DRUGS)} response with AUC ${rand(0.71, 0.94).toFixed(2)}`,
+   291→      content: `Predictive model validated on ${randInt(120, 900)} archived samples across ${randInt(2, 6)} sites. Decision-curve analysis favors biomarker-guided enrollment, but calibration drifts beyond ${randInt(3, 12)} months.`,
+   292→    }),
+   293→    () => ({
+   294→      title: `Adverse-event clustering in ${pick(['high-dose', 'escalation', 'maintenance'])} arm implicates off-target ${pick(PATHWAYS)} activity`,
+   295→      content: `Cluster of ${randInt(4, 17)} events shares a temporal signature ${randInt(5, 30)} days post-infusion. Transcriptomic reanalysis of stored biopsies shows ${pick(['complement deposition', 'T-cell skewing', 'endothelial activation'])}; dosing hold enacted.`,
+   296→    }),
+   297→  ],
+   298→  markets: [
+   299→    () => ({
+   300→      title: `Unusual options flow in ${pick(SECTORS)}: $${randInt(20, 890)}M notional at ${rand(2.4, 7.5).toFixed(1)}σ`,
+   301→      content: `Sweep pattern concentrated in ${randInt(2, 9)} strikes expiring within ${randInt(4, 45)} days. Implied-vol surface skew flipped sign intraday; flow footprint matches ${pick(['a single node', 'two correlated desks', 'an algorithmic suite'])}.`,
+   302→    }),
+   303→    () => {
+   304→      const a = pick(SECTORS)
+   305→      let b = pick(SECTORS)
+   306→      let guard = 0
+   307→      while (b === a && guard++ < 8) b = pick(SECTORS)
+   308→      return {
+   309→        title: `Cross-asset correlation breakdown: ${a} vs ${b} regime flip`,
+   310→        content: `Rolling 60-day correlation collapsed from ${rand(0.5, 0.85).toFixed(2)} to ${rand(-0.4, 0.05).toFixed(2)} in ${randInt(2, 9)} sessions. Eigenvalue decomposition of the covariance matrix shows a new dominant factor absorbing ${rand(22, 61).toFixed(0)}% of variance.`,
+   311→      }
+   312→    },
+   313→    () => ({
+   314→      title: `Dark-pool print anomaly in ${pick(TICKERS)} — ${rand(6, 34).toFixed(0)}% of ADV in ${randInt(3, 40)} min`,
+   315→      content: `Prints clustered at ${randInt(2, 8)} price levels with ${pick(['minimal price impact', 'persistent post-print drift', 'immediate mean reversion'])}. A related entity filed a ${pick(['13D amendment', 'convertible issuance', 'shelf registration'])} ${randInt(1, 6)} days later.`,
+   316→    }),
+   317→  ],
+   318→  biology: [
+   319→    () => ({
+   320→      title: `${pick(ORFS)} expression correlates with unexpected methylation shift on chr${randInt(1, 22)}`,
+   321→      content: `Bulk and single-cell datasets agree on a ${rand(0.3, 0.8).toFixed(2)} Spearman correlation under ${pick(['hypoxia', 'serum deprivation', 'heat shock'])}. The methylated block spans ${randInt(2, 40)} CpG sites near a ${pick(['CpG island shore', 'enhancer hub', 'lamin-associated domain'])}.`,
+   322→    }),
+   323→    () => ({
+   324→      title: `CRISPRi screen names ${pick(GENES)} as switch regulator of ${pick(PROCESSES)}`,
+   325→      content: `Pooled screen (${randInt(2, 9)}×10⁴ guides) yields a ${rand(1.9, 6.2).toFixed(1)}-fold enrichment at FDR ${rand(0.01, 0.09).toFixed(2)}. Rescue experiments restore the phenotype in ${rand(60, 95).toFixed(0)}% of clones, implicating a ${pick(['dose-sensitive', 'context-dependent', 'bimodal'])} regime.`,
+   326→    }),
+   327→    () => ({
+   328→      title: `Metagenomic assembly uncovers ${pick(['Crenarchaeota clade', 'Cyanobacteria clade', 'uncultured Myxococcales'])} carrying novel ${pick(ENZYMES)} family`,
+   329→      content: `Contigs recovered from ${pick(['abyssal sediments', 'karst aquifers', 'permafrost cores'])} encode ${randInt(2, 11)} divergent homologs. Structural prediction places the active site ${rand(20, 60).toFixed(0)} Å from any known fold; one variant is thermostable to ${randInt(70, 110)} °C.`,
+   330→    }),
+   331→    () => ({
+   332→      title: `Single-cell atlas: ${pick(CELLTYPES)} transdifferentiate under ${pick(['brief Wnt pulse', 'pulsed shear stress', 'interleukin cocktail'])}`,
+   333→      content: `Pseudotime reconstruction shows a ${pick(['two-step', 'continuous', 'bifurcating'])} trajectory with ${rand(18, 70).toFixed(0)}% conversion efficiency. scATAC peaks implicate ${pick(GENES)} binding ${randInt(2, 20)} h before fate commitment.`,
+   334→    }),
+   335→  ],
+   336→  physics: [
+   337→    () => ({
+   338→      title: `${pick(DETECTORS)}: ${randInt(4, 90)}-event excess at ${rand(60, 9000).toFixed(0)} GeV in ${pick(CHANNELS)} channel`,
+   339→      content: `Local significance ${rand(2.4, 4.7).toFixed(1)}σ (global ${rand(1.1, 3.2).toFixed(1)}σ after look-elsewhere). Background model verified with ${randInt(2, 8)} control regions; the ${pick(['angular distribution', 'timing spectrum', 'charge asymmetry'])} fits neither SM nor the leading BSM benchmark.`,
+   340→    }),
+   341→    () => ({
+   342→      title: `Muon precession residual persists at ${rand(1.8, 4.9).toFixed(1)}σ in run ${randInt(2021, 2025)}`,
+   343→      content: `Lattice-QCD-combined theory still disagrees with the measured anomalous moment by ${rand(1.2, 5.1).toFixed(1)}×10⁻⁹. A ${pick(['light-scalar', 'vacuum-polarization', 'new-lepton-family'])} explanation remains compatible with constraints at ${rand(60, 95).toFixed(0)}% CL.`,
+   344→    }),
+   345→    () => ({
+   346→      title: `Plasma confinement beats Lawson margin by ${rand(5, 40).toFixed(0)}% in ${pick(['H-mode', 'advanced tokamak', 'stellarator mirrored'])} mode`,
+   347→      content: `Sustained pulse of ${rand(2, 41).toFixed(1)} s with Q≈${rand(0.4, 1.4).toFixed(2)}. Edge-localized modes suppressed via ${pick(['resonant magnetic perturbation', 'pellet pacing', 'grazing-angle injection'])}; impurity accumulation remains the limiter.`,
+   348→    }),
+   349→    () => ({
+   350→      title: `${pick(DETECTORS)} strain glitch train matches pre-merger template ${pick(['GW-190814-like', 'GW-200115-like', 'numerical-relativity surrogate NR-7'])}`,
+   351→      content: `Matched-filter SNR ${rand(8.4, 21).toFixed(1)} across ${randInt(2, 14)} glasts over ${randInt(2, 30)} min. Post-merger echo candidates at ${rand(1.9, 3.6).toFixed(1)}σ motivate a targeted re-analysis.`,
+   352→    }),
+   353→  ],
+   354→  chemistry: [
+   355→    () => ({
+   356→      title: `${pick(METALS)}–${pick(LIGANDS)} catalyst reaches ${rand(82, 99).toFixed(1)}% enantioselectivity in ${pick(REACTIONS)}`,
+   357→      content: `Turnover number ${randInt(400, 24000)} at ${rand(0.1, 2).toFixed(1)} mol% loading. Mechanistic probes indicate a ${pick(INTERMEDIATES)} intermediate; catalyst decomposes via ${pick(['bimetallic aggregation', 'ligand oxidation', 'reductive elimination'])} after ${randInt(3, 40)} h.`,
+   358→    }),
+   359→    () => ({
+   360→      title: `Room-temperature ${pick(REACTIONS)} via ${pick(INTERMEDIATES)} intermediate confirmed`,
+   361→      content: `Operando IR captures the intermediate at ${randInt(1600, 2100)} cm⁻¹ within ${rand(10, 90).toFixed(0)} s of the potential step. DFT barrier ${rand(12, 22).toFixed(1)} kcal/mol matches the kinetic isotope effect ${rand(1.8, 4.2).toFixed(1)}.`,
+   362→    }),
+   363→    () => ({
+   364→      title: `Self-assembling ${pick(['peptoid', 'bottlebrush polymer', 'supramolecular ribbon'])} switches conductance at ${rand(0.2, 3.4).toFixed(1)} V`,
+   365→      content: `On/off ratio ${randInt(30, 4000)} sustained over ${randInt(100, 5000)} cycles. AFM shows ${pick(['filament bundling', 'monolayer reordering', 'pore hydration'])} at the switching threshold; switching survives ${randInt(10, 90)} hydration cycles.`,
+   366→    }),
+   367→  ],
+   368→  economics: [
+   369→    () => ({
+   370→      title: `${pick(INDICATORS)} in ${pick(SECTORS)} inverts at ${rand(1.1, 4.8).toFixed(2)} threshold`,
+   371→      content: `Panel of ${randInt(12, 60)} economies over ${randInt(10, 30)} years shows a smooth sign flip rather than a structural break. A ${pick(['threshold-VAR', 'regime-switching DSGE', 'sign-restricted SVAR'])} reproduces the inversion when ${pick(['credit spreads', 'energy intensity', 'demographic drift'])} exceeds the threshold.`,
+   372→    }),
+   373→    () => ({
+   374→      title: `Labor productivity divergence across ${pick(REGIONS)} widens to ${rand(4, 28).toFixed(1)}%`,
+   375→      content: `Divergence accelerated after ${randInt(2016, 2023)}; ${pick(['frontier-firm absorption', 'remote-work sorting', 'capital-embodied AI adoption'])} explains ${rand(20, 70).toFixed(0)}% in shift-share accounting. Wage response is asymmetric across skill deciles.`,
+   376→    }),
+   377→    () => ({
+   378→      title: `Yield-curve regime shift flagged by ${pick(['deep-state-space model', 'rough-volatility filter', 'entropy-based classifier'])} at ${rand(72, 97).toFixed(0)}% posterior`,
+   379→      content: `Transition probability rose ${rand(2, 9).toFixed(1)}× over ${randInt(3, 15)} sessions. Simulated policy paths put the ${pick(['inversion depth', 're-steepening slope', 'level shift'])} at ±${rand(18, 90).toFixed(0)} bp depending on ${pick(['issuance mix', 'reserve drift', 'term-premium anchoring'])}.`,
+   380→    }),
+   381→  ],
+   382→  sensors: [
+   383→    () => ({
+   384→      title: `IoT grid ${pick(SENSOR_SITES)} reports correlated ${pick(SENSOR_MODALITIES)} across ${randInt(3, 60)} nodes`,
+   385→      content: `Cross-node coherence peaks at ${rand(0.55, 0.95).toFixed(2)} with lag ${randInt(1, 400)} ms. No maintenance event maps to the window; the anomaly propagates along ${pick(['power feeders', 'water mains', 'utility risers'])} topology.`,
+   386→    }),
+   387→    () => ({
+   388→      title: `Acoustic signature at ${pick(SENSOR_SITES)} matches pre-failure mode ${pick(['M-2 bearing wear', 'M-9 cavitation', 'M-14 insulation partial discharge'])}`,
+   389→      content: `Spectral ratio ${rand(1.4, 6).toFixed(1)} dB above fleet baseline for ${randInt(4, 60)} h. RUL model assigns ${rand(55, 96).toFixed(0)}% probability of failure inside ${randInt(7, 120)} days; inspection dispatch queued.`,
+   390→    }),
+   391→    () => ({
+   392→      title: `Distributed strain mesh detects micro-seismic precursor at ${rand(0.4, 18).toFixed(1)} km depth`,
+   393→      content: `Event swarm of ${randInt(5, 90)} micro-events with b-value dropping to ${rand(0.6, 1.0).toFixed(2)}. Creep-meter co-location confirms ${rand(0.2, 4).toFixed(1)} mm/day acceleration; alert level raised to ${pick(['amber', 'orange', 'yellow'])}.`,
+   394→    }),
+   395→  ],
+   396→  simulation: [
+   397→    () => ({
+   398→      title: `Agent-based run #${randInt(10000, 99999)}: ${pick(SIM_BEHAVIORS)} emerges at ${pick(SIM_PARAMS)} = ${rand(0.05, 0.9).toFixed(2)}`,
+   399→      content: `Phase boundary reproduced in ${randInt(60, 96).toFixed(0)}% of ${randInt(200, 900)} seeds. Order parameter jumps ${rand(1.8, 9).toFixed(1)}× within ${randInt(2, 40)} ticks; hysteresis loop suggests a ${pick(['first-order', 'critical', 'absorbing'])} transition.`,
+   400→    }),
+   401→    () => ({
+   402→      title: `Multi-agent phase transition in ${pick(SIM_BEHAVIORS)} as ${pick(SIM_PARAMS)} crosses ${rand(0.1, 0.85).toFixed(2)}`,
+   403→      content: `Finite-size scaling gives exponent ν≈${rand(0.6, 1.8).toFixed(2)}. Counterintuitively, added noise ${pick(['sharpens', 'erases', 'delays'])} the transition, consistent with ${pick(['noise-induced ordering', 'resonant activation', 'chaotic itinerancy'])}.`,
+   404→    }),
+   405→    () => ({
+   406→      title: `Digital-twin divergence from physical twin grows ${rand(0.1, 3.2).toFixed(2)}%/day`,
+   407→      content: `Divergence localized to the ${pick(['supply-layer', 'transport-layer', 'policy-layer'])} sub-model. Assimilating ${pick(['sparse telemetry', 'event logs', 'human annotations'])} cuts divergence ${rand(20, 80).toFixed(0)}%; residual bias appears adversarial rather than stochastic.`,
+   408→    }),
+   409→  ],
+   410→}
+   411→
+   412→export function generateSignal(category: string): GeneratedSignal {
+   413→  const templates = SIGNAL_TEMPLATES[category as Category] ?? SIGNAL_TEMPLATES.papers
+   414→  const { title, content } = pick(templates)()
+   415→  const anomalyScore = round3(drawAnomalyScore())
+   416→  return {
+   417→    title,
+   418→    content,
+   419→    features: drawFeatures(anomalyScore),
+   420→    anomalyScore,
+   421→    noveltyScore: drawNoveltyScore(anomalyScore),
+   422→    promoted: false,
+   423→  }
+   424→}
+   425→
+   426→export function generateSignals(category: string, count: number): GeneratedSignal[] {
+   427→  const out: GeneratedSignal[] = []
+   428→  for (let i = 0; i < count; i++) out.push(generateSignal(category))
+   429→  return out
+   430→}
+   431→
+   432→// ─── Phenomena pools (used for hypotheses + cross-domain links) ──────────────
+   433→
+   434→export const PHENOMENA: Record<Category, readonly string[]> = {
+   435→  papers: ['twisted-lattice coherence', 'topological phase switching', 'scaling-law violation', 'anomalous symmetry breaking'],
+   436→  patents: ['self-calibrating actuation', 'closed-loop microfluidic routing', 'metamaterial tunability', 'drift-compensating feedback'],
+   437→  clinical: ['biomarker-predicted response', 'adverse-event clustering', 'dose-titration drift', 'ctDNA inflection points'],
+   438→  markets: ['dark-pool liquidity prints', 'options-flow sigma bursts', 'correlation regime flips', 'post-print drift windows'],
+   439→  biology: ['methylation drift', 'ORF expression bursts', 'transdifferentiation cascades', 'quorum-sensing crosstalk'],
+   440→  physics: ['GeV event excesses', 'muon precession residuals', 'confinement margin overshoot', 'strain glitch trains'],
+   441→  chemistry: ['enantioselectivity spikes', 'room-temperature activation pathways', 'conductance switching thresholds', 'operando intermediate lifetimes'],
+   442→  economics: ['elasticity inversions', 'productivity divergence', 'regime-shift posteriors', 'term-premium dislocations'],
+   443→  sensors: ['correlated thermal drift', 'pre-failure acoustic modes', 'micro-seismic precursors', 'topology-following anomalies'],
+   444→  simulation: ['emergent coordination transitions', 'norm collapse cascades', 'digital-twin divergence', 'noise-induced ordering'],
+   445→}
+   446→
+   447→const CROSS_MECHANISMS = [
+   448→  'shared stochastic resonance',
+   449→  'topological defect mediation',
+   450→  'a rate-limiting kinetic bottleneck',
+   451→  'bidirectional information transfer',
+   452→  'nonlinear feedback entrainment',
+   453→  'scale-invariant fluctuation coupling',
+   454→  'common latent-variable leakage',
+   455→  'phase-locking across noisy channels',
+   456→  'gradient-driven transport coupling',
+   457→  'convergent evolutionary pressure',
+   458→] as const
+   459→
+   460→export function mechanismBetween(sourceDomain: string, targetDomain: string): string {
+   461→  const a = pick(PHENOMENA[sourceDomain as Category] ?? PHENOMENA.papers)
+   462→  const b = pick(PHENOMENA[targetDomain as Category] ?? PHENOMENA.papers)
+   463→  const mech = pick(CROSS_MECHANISMS)
+   464→  return `${a} modulates ${b} through ${mech}`
+   465→}
+   466→
+   467→// ─── Template hypothesis generator (LLM fallback, Layer 4) ───────────────────
+   468→
+   469→export interface TemplateHypothesis {
+   470→  title: string
+   471→  summary: string
+   472→  domains: string[]
+   473→  novelty: number
+   474→  impact: number
+   475→  confidence: number
+   476→  counterfactuals: Counterfactual[]
+   477→}
+   478→
+   479→const HYP_TITLE_TEMPLATES = [
+   480→  (a: string, b: string, mech: string) => `${cap(a)} entrains ${b} through ${mech}`,
+   481→  (a: string, b: string) => `${cap(a)} predicts ${b} transitions with a ${randInt(1, 5)}-cycle lag`,
+   482→  (a: string, b: string, mech: string) => `${cap(a)} and ${b} share a ${mech} basis`,
+   483→  (a: string, b: string) => `Bidirectional coupling between ${a} and ${b} under high-entropy regimes`,
+   484→  (a: string, b: string, mech: string) => `${cap(a)} suppresses the ${b} noise floor via ${mech}`,
+   485→] as const
+   486→
+   487→function cap(s: string): string {
+   488→  return s.charAt(0).toUpperCase() + s.slice(1)
+   489→}
+   490→
+   491→function buildCounterfactuals(a: string, b: string): Counterfactual[] {
+   492→  const cfs: Counterfactual[] = [
+   493→    {
+   494→      question: `Does the effect persist when ${a} variance is ablated?`,
+   495→      result: `Simulated ablation reduces coupling strength by ${rand(30, 80).toFixed(0)}% (n=${randInt(200, 900)} runs).`,
+   496→      supports: true,
+   497→    },
+   498→    {
+   499→      question: `Is the correlation an artifact of sampling density?`,
+   500→      result: `Bootstrap resampling at ${randInt(2, 9)}× density preserves the link (p=${rand(0.002, 0.04).toFixed(3)}).`,
+   501→      supports: true,
+   502→    },
+   503→  ]
+   504→  if (chance(0.35)) {
+   505→    cfs.push({
+   506→      question: `Would a shuffled null model of ${b} streams reproduce the pattern?`,
+   507→      result: `Shuffled nulls reproduce the pattern in ${rand(6, 22).toFixed(0)}% of seeds — coupling likely spurious.`,
+   508→      supports: false,
+   509→    })
+   510→  } else {
+   511→    cfs.push({
+   512→      question: `Would a shuffled null model of ${b} streams reproduce the pattern?`,
+   513→      result: `Null model fails to reproduce the pattern in ${randInt(180, 480)}/${randInt(480, 500)} seeds.`,
+   514→      supports: true,
+   515→    })
+   516→  }
+   517→  return cfs
+   518→}
+   519→
+   520→function twoDistinctDomains(available: string[]): [Category, Category] {
+   521→  const pool = available.filter(isCategory)
+   522→  const a = pool.length > 0 ? pick(pool) : pick(CATEGORIES)
+   523→  let b = pick(CATEGORIES)
+   524→  let guard = 0
+   525→  while (b === a && guard++ < 10) b = pick(CATEGORIES)
+   526→  return [a, b]
+   527→}
+   528→
+   529→export function generateTemplateHypotheses(
+   530→  signalCategories: string[],
+   531→  count: number,
+   532→): TemplateHypothesis[] {
+   533→  const out: TemplateHypothesis[] = []
+   534→  for (let i = 0; i < count; i++) {
+   535→    const [a, b] = twoDistinctDomains(signalCategories)
+   536→    const phenA = pick(PHENOMENA[a])
+   537→    const phenB = pick(PHENOMENA[b])
+   538→    const mech = pick(CROSS_MECHANISMS)
+   539→    const title = pick(HYP_TITLE_TEMPLATES)(phenA, phenB, mech)
+   540→    const r = rand(0.42, 0.93)
+   541→    out.push({
+   542→      title,
+   543→      summary: `Concurrent ${a} and ${b} signals show a ${r.toFixed(2)} rank correlation peaking at a ${randInt(1, 5)}-cycle lag. We hypothesize ${mech} couples ${phenA} to ${phenB}; falsification under counterfactual ablation would flag the link as spurious.`,
+   544→      domains: [a, b],
+   545→      novelty: round3(rand(0.35, 0.97)),
+   546→      impact: round3(rand(0.3, 0.95)),
+   547→      confidence: round3(rand(0.3, 0.9)),
+   548→      counterfactuals: buildCounterfactuals(phenA, phenB),
+   549→    })
+   550→  }
+   551→  return out
+   552→}
+   553→
+   554→// ─── Breakthrough synthesis (Layer 5) ────────────────────────────────────────
+   555→
+   556→const SOLUTION_TYPE_BY_DOMAIN: Partial<Record<Category, SolutionType>> = {
+   557→  biology: 'molecule',
+   558→  chemistry: 'molecule',
+   559→  markets: 'financial',
+   560→  economics: 'financial',
+   561→  physics: 'engineering',
+   562→  sensors: 'engineering',
+   563→  patents: 'engineering',
+   564→  clinical: 'protocol',
+   565→  simulation: 'protocol',
+   566→  papers: 'model',
+   567→}
+   568→
+   569→export function deriveSolutionType(domains: string[]): SolutionType {
+   570→  for (const d of domains) {
+   571→    const t = SOLUTION_TYPE_BY_DOMAIN[d as Category]
+   572→    if (t) return t
+   573→  }
+   574→  return 'model'
+   575→}
+   576→
+   577→const COMPONENTS: Record<SolutionType, readonly string[]> = {
+   578→  molecule: [
+   579→    'stabilized peptide analog library',
+   580→    'metal–organic framework scaffold',
+   581→    'guide-RNA multiplex cassette',
+   582→    'allosteric small-molecule modulator',
+   583→    'enzyme-mimetic organocatalyst',
+   584→  ],
+   585→  financial: [
+   586→    'volatility-suppression hedge basket',
+   587→    'cross-venue liquidity rebalancer',
+   588→    'regime-switching allocation overlay',
+   589→    'drawdown-aware execution scheduler',
+   590→    'synthetic exposure ladder',
+   591→  ],
+   592→  engineering: [
+   593→    'resonant damping lattice',
+   594→    'edge telemetry mesh with drift correction',
+   595→    'self-calibrating actuator retrofit',
+   596→    'fault-tolerant control loop',
+   597→    'adaptive thermal bus',
+   598→  ],
+   599→  protocol: [
+   600→    'adaptive enrollment protocol',
+   601→    'biomarker-stratified dosing schedule',
+   602→    'human-in-the-loop review workflow',
+   603→    'cross-site data harmonization pipeline',
+   604→    'safety signal escalation ladder',
+   605→  ],
+   606→  model: [
+   607→    'transformer surrogate simulator',
+   608→    'Bayesian hierarchical estimator',
+   609→    'graph-neural cross-domain matcher',
+   610→    'counterfactual ablation harness',
+   611→    'uncertainty-aware ensemble router',
+   612→  ],
+   613→}
+   614→
+   615→const EXPECTED_GAIN: Record<SolutionType, readonly string[]> = {
+   616→  molecule: [`+${randInt(15, 70)}% target affinity`, `${randInt(2, 9)}× selectivity improvement`, `−${randInt(20, 60)}% off-target binding`],
+   617→  financial: [`+${randInt(20, 140)} bps risk-adjusted alpha`, `−${randInt(15, 55)}% drawdown`, `+${randInt(8, 30)}% Sharpe ratio`],
+   618→  engineering: [`+${randInt(10, 45)}% throughput`, `−${randInt(20, 70)}% failure rate`, `${randInt(2, 6)}× maintenance interval`],
+   619→  protocol: [`−${randInt(15, 50)}% adverse events`, `+${randInt(10, 40)}% enrollment velocity`, `−${randInt(10, 35)}% time-to-decision`],
+   620→  model: [`${randInt(2, 11)}× faster inference`, `+${randInt(4, 18)} pts predictive accuracy`, `−${randInt(20, 65)}% labeling cost`],
+   621→}
+   622→
+   623→const TIME_HORIZONS = ['2–4 weeks', '1–2 quarters', '6–12 months', '18–36 months'] as const
+   624→
+   625→export function buildSynthesis(solutionType: SolutionType, domains: string[]): Synthesis {
+   626→  const phenom = domains.map((d) => pick(PHENOMENA[d as Category] ?? PHENOMENA.papers))
+   627→  const mech = pick(CROSS_MECHANISMS)
+   628→  const compCount = randInt(2, 3)
+   629→  const components: string[] = []
+   630→  let guard = 0
+   631→  while (components.length < compCount && guard++ < 20) {
+   632→    const c = pick(COMPONENTS[solutionType])
+   633→    if (!components.includes(c)) components.push(c)
+   634→  }
+   635→  return {
+   636→    components,
+   637→    mechanism: `${cap(phenom[0] ?? 'cross-domain coupling')} is stabilized by ${mech}, propagating through ${phenom.slice(1).join(' and ') || 'adjacent domains'} into a deployable ${solutionType} intervention.`,
+   638→    feasibility: round3(rand(0.3, 0.95)),
+   639→    expectedGain: pick(EXPECTED_GAIN[solutionType]),
+   640→    timeHorizon: pick(TIME_HORIZONS),
+   641→  }
+   642→}
+   643→
+   644→export function buildBreakthroughSummary(solutionType: SolutionType, synthesis: Synthesis): string {
+   645→  return `Deployable ${solutionType}: ${synthesis.mechanism} Expected gain ${synthesis.expectedGain} on a ${synthesis.timeHorizon} horizon (feasibility ${Math.round(synthesis.feasibility * 100)}%).`
+   646→}
+   647→
+   648→// ─── Governance content (Layer 7) ────────────────────────────────────────────
+   649→
+   650→const BASE_RISK: Record<SolutionType, [number, number]> = {
+   651→  financial: [0.5, 0.9],
+   652→  molecule: [0.45, 0.85],
+   653→  engineering: [0.2, 0.6],
+   654→  protocol: [0.28, 0.68],
+   655→  model: [0.12, 0.5],
+   656→}
+   657→
+   658→const FLAGS_BY_TYPE: Record<SolutionType, readonly string[]> = {
+   659→  financial: ['market-manipulation risk', 'systemic-liquidity exposure'],
+   660→  molecule: ['dual-use potential', 'patient-safety review'],
+   661→  engineering: ['infrastructure dependency', 'dual-use potential'],
+   662→  protocol: ['patient-safety review', 'informed-consent scope'],
+   663→  model: ['algorithmic bias risk', 'data-provenance opacity'],
+   664→}
+   665→
+   666→const GENERIC_FLAGS = ['provenance unverified', 'deployment blast radius', 'cross-jurisdiction conflict'] as const
+   667→
+   668→export interface GovernanceContent {
+   669→  riskScore: number
+   670→  ethicalFlags: string[]
+   671→  notes: string
+   672→}
+   673→
+   674→export function buildGovernanceContent(solutionType: SolutionType, domains: string[]): GovernanceContent {
+   675→  const [lo, hi] = BASE_RISK[solutionType]
+   676→  const riskScore = round3(clamp01(rand(lo, hi) + rand(-0.05, 0.05)))
+   677→
+   678→  const flags = new Set<string>()
+   679→  for (const f of FLAGS_BY_TYPE[solutionType]) if (chance(0.75)) flags.add(f)
+   680→  if (domains.includes('clinical') && solutionType !== 'protocol') flags.add('patient-safety review')
+   681→  if (domains.includes('markets') && solutionType !== 'financial') flags.add('market-manipulation risk')
+   682→  if (chance(0.3)) flags.add(pick(GENERIC_FLAGS))
+   683→  if (flags.size === 0) flags.add(pick(FLAGS_BY_TYPE[solutionType]))
+   684→
+   685→  const flagList = [...flags]
+   686→  const notes =
+   687→    riskScore < 0.35
+   688→      ? `Automated review: risk posture acceptable (${solutionType} class). ${flagList.length ? `Monitored flags: ${flagList.join(', ')}.` : 'No flags raised.'}`
+   689→      : `Automated review escalated: ${solutionType} class exceeds the risk budget. ${flagList.join(', ')} require human sign-off before deployment.`
+   690→  return { riskScore, ethicalFlags: flagList, notes }
+   691→}
+   692→
+   693→// ─── Report content (Layer 8) ────────────────────────────────────────────────
+   694→
+   695→export function buildCycleSummary(input: {
+   696→  cycle: number
+   697→  signals: number
+   698→  anomalies: number
+   699→  hypotheses: number
+   700→  validated: number
+   701→  breakthroughs: number
+   702→  governed: number
+   703→  flagged: number
+   704→}): string {
+   705→  return (
+   706→    `Cycle ${input.cycle}: ingested ${input.signals} signals (${input.anomalies} high-anomaly) across the active stream mesh. ` +
+   707→    `${input.validated}/${input.hypotheses} hypotheses survived counterfactual simulation, producing ${input.breakthroughs} synthesized breakthrough${input.breakthroughs === 1 ? '' : 's'}. ` +
+   708→    `Governance cleared ${input.governed} and flagged ${input.flagged} for human review.`
+   709→  )
+   710→}
+   711→
+   712→export function buildAlertReport(input: {
+   713→  title: string
+   714→  impactRank: number
+   715→  solutionType: string
+   716→  riskScore: number
+   717→  status: string
+   718→}): { title: string; content: string } {
+   719→  return {
+   720→    title: `High-impact breakthrough: ${input.title}`,
+   721→    content: `Breakthrough "${input.title}" (${input.solutionType}) scored impactRank ${input.impactRank.toFixed(3)} — above the 0.80 alert threshold. Governance status "${input.status}" with riskScore ${input.riskScore.toFixed(2)}; recommend immediate dashboard review.`,
+   722→  }
+   723→}
+   724→
+   725→export function buildBlindSpotReport(input: {
+   726→  cycle: number
+   727→  streamName: string
+   728→  health: number
+   729→  velocity: number
+   730→  successRate: number
+   731→}): { title: string; content: string } {
+   732→  return {
+   733→    title: `Blind-spot deep-dive — cycle ${input.cycle}`,
+   734→    content:
+   735→      `Self-optimization layer flagged ${input.streamName} (health ${input.health.toFixed(2)}, velocity ${input.velocity.toFixed(2)}) as an information blind spot this cycle. ` +
+   736→      `Discovery success rate of ${(input.successRate * 100).toFixed(0)}% suggests the stream mesh is under-exposing ${pick(['low-entropy regimes', 'cross-domain tails', 'slow-onset anomalies'])}; stream weighting will be nudged upstream.`,
+   737→  }
+   738→}
+   739→

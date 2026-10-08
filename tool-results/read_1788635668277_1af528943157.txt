@@ -1,0 +1,1057 @@
+     1→     1→// ─── Engine core: 8-layer discovery pipeline ─────────────────────────────────
+     2→     2→// runTick()  — one full pipeline cycle through all 8 layers.
+     3→     3→// getState() — ensureEngine + due-tick (mutex-protected) + full dashboard payload.
+     4→     4→//
+     5→     5→// Concurrency: a module-level promise mutex (anchored on globalThis so every
+     6→     6→// route bundle shares it) guarantees ticks never overlap.
+     7→     7→
+     8→     8→import { db } from '@/lib/db'
+     9→     9→import {
+    10→    10→  buildAlertReport,
+    11→    11→  buildBlindSpotReport,
+    12→    12→  buildBreakthroughSummary,
+    13→    13→  buildCycleSummary,
+    14→    14→  buildGovernanceContent,
+    15→    15→  buildSynthesis,
+    16→    16→  CATEGORIES,
+    17→    17→  chance,
+    18→    18→  clamp01,
+    19→    19→  deriveSolutionType,
+    20→    20→  generateSignals,
+    21→    21→  generateTemplateHypotheses,
+    22→    22→  isCategory,
+    23→    23→  mechanismBetween,
+    24→    24→  pick,
+    25→    25→  rand,
+    26→    26→  randInt,
+    27→    27→  round2,
+    28→    28→  round3,
+    29→    29→} from '@/lib/engine/content'
+    30→    30→import { generateHypothesesWithLlm } from '@/lib/engine/llm'
+    31→    31→import type {
+    32→    32→  AnalyticsDTO,
+    33→    33→  BreakthroughDTO,
+    34→    34→  CorrelationDTO,
+    35→    35→  Counterfactual,
+    36→    36→  EngineConfig,
+    37→    37→  EngineConfigPatch,
+    38→    38→  EngineStateResponse,
+    39→    39→  GovernanceDTO,
+    40→    40→  HypothesisDTO,
+    41→    41→  LayerKey,
+    42→    42→  LayerStatus,
+    43→    43→  ReportDTO,
+    44→    44→  SignalDTO,
+    45→    45→  StreamDTO,
+    46→    46→  Synthesis,
+    47→    47→  ValidationStats,
+    48→    48→} from '@/lib/engine-types'
+    49→    49→
+    50→    50→// ─── Static engine definition ────────────────────────────────────────────────
+    51→    51→
+    52→    52→const ENGINE_ID = 'singleton'
+    53→    53→
+    54→    54→const LAYER_DEFS: ReadonlyArray<{
+    55→    55→  layer: number
+    56→    56→  key: LayerKey
+    57→    57→  name: string
+    58→    58→  purpose: string
+    59→    59→}> = [
+    60→    60→  { layer: 1, key: 'input', name: 'Input Universe', purpose: "Expand the system's vision beyond human bandwidth" },
+    61→    61→  { layer: 2, key: 'preprocess', name: 'Preprocessing', purpose: 'Convert raw noise into scored, structured features' },
+    62→    62→  { layer: 3, key: 'analysis', name: 'Multi-Domain Analysis', purpose: 'Detect correlations that span scientific disciplines' },
+    63→    63→  { layer: 4, key: 'discovery', name: 'Discovery', purpose: 'Generate and stress-test hypotheses at machine scale' },
+    64→    64→  { layer: 5, key: 'breakthrough', name: 'Breakthrough Synthesis', purpose: 'Fuse validated knowledge into deployable solutions' },
+    65→    65→  { layer: 6, key: 'optimization', name: 'Autonomous Optimization', purpose: "Measure, learn, and patch the engine's own blind spots" },
+    66→    66→  { layer: 7, key: 'governance', name: 'Governance', purpose: 'Enforce safety, ethics, and human oversight' },
+    67→    67→  { layer: 8, key: 'output', name: 'Insight Output', purpose: 'Publish decision-grade insight to humans' },
+    68→    68→]
+    69→    69→
+    70→    70→const LAYER_METRIC_KEYS: Record<LayerKey, readonly string[]> = {
+    71→    71→  input: ['ingested', 'streams', 'anomalies'],
+    72→    72→  preprocess: ['promoted', 'avgAnomaly', 'avgNovelty'],
+    73→    73→  analysis: ['crossLinks', 'velocity', 'acceleration'],
+    74→    74→  discovery: ['generated', 'validated'],
+    75→    75→  breakthrough: ['synthesized'],
+    76→    76→  optimization: ['successRate', 'avgNovelty', 'blindSpotScore'],
+    77→    77→  governance: ['checked', 'passed', 'flagged'],
+    78→    78→  output: ['reportsPublished', 'alerts'],
+    79→    79→}
+    80→    80→
+    81→    81→const LAYER_LOAD: Record<LayerKey, { key: string; max: number }> = {
+    82→    82→  input: { key: 'ingested', max: 40 },
+    83→    83→  preprocess: { key: 'avgAnomaly', max: 1 },
+    84→    84→  analysis: { key: 'crossLinks', max: 4 },
+    85→    85→  discovery: { key: 'generated', max: 3 },
+    86→    86→  breakthrough: { key: 'synthesized', max: 3 },
+    87→    87→  optimization: { key: 'successRate', max: 1 },
+    88→    88→  governance: { key: 'checked', max: 3 },
+    89→    89→  output: { key: 'reportsPublished', max: 3 },
+    90→    90→}
+    91→    91→
+    92→    92→const SEED_STREAMS: ReadonlyArray<{ name: string; category: string }> = [
+    93→    93→  { name: 'arXiv Preprints', category: 'papers' },
+    94→    94→  { name: 'USPTO Patent Feed', category: 'patents' },
+    95→    95→  { name: 'ClinicalTrials.gov', category: 'clinical' },
+    96→    96→  { name: 'Global Market Ticks', category: 'markets' },
+    97→    97→  { name: 'Genomics Repositories', category: 'biology' },
+    98→    98→  { name: 'Particle Collider Telemetry', category: 'physics' },
+    99→    99→  { name: 'ChemSynth Reaction Libraries', category: 'chemistry' },
+   100→   100→  { name: 'Macro-Economic Indicators', category: 'economics' },
+   101→   101→  { name: 'IoT Sensor Grids', category: 'sensors' },
+   102→   102→  { name: 'Agent-Based Simulation Clusters', category: 'simulation' },
+   103→   103→]
+   104→   104→
+   105→   105→const PRUNE_TARGETS = {
+   106→   106→  rawSignal: 400,
+   107→   107→  crossDomainLink: 120,
+   108→   108→  layerMetric: 800,
+   109→   109→  insightReport: 60,
+   110→   110→  governanceCheck: 80,
+   111→   111→} as const
+   112→   112→
+   113→   113→const ANOMALY_THRESHOLD = 0.75
+   114→   114→
+   115→   115→// ─── Tick result ─────────────────────────────────────────────────────────────
+   116→   116→
+   117→   117→export interface TickResult {
+   118→   118→  cycle: number
+   119→   119→  signals: number
+   120→   120→  anomalies: number
+   121→   121→  promoted: number
+   122→   122→  crossLinks: number
+   123→   123→  hypotheses: number
+   124→   124→  validated: number
+   125→   125→  rejected: number
+   126→   126→  breakthroughs: number
+   127→   127→  governed: number
+   128→   128→  flagged: number
+   129→   129→  reports: number
+   130→   130→  llmUsed: boolean
+   131→   131→  durationMs: number
+   132→   132→}
+   133→   133→
+   134→   134→// ─── Global tick mutex (survives per-route bundling) ─────────────────────────
+   135→   135→
+   136→   136→interface TickMutex {
+   137→   137→  promise: Promise<TickResult> | null
+   138→   138→}
+   139→   139→
+   140→   140→const globalForEngine = globalThis as unknown as { __discoveryEngineTickMutex?: TickMutex }
+   141→   141→const tickMutex: TickMutex = globalForEngine.__discoveryEngineTickMutex ?? { promise: null }
+   142→   142→globalForEngine.__discoveryEngineTickMutex = tickMutex
+   143→   143→
+   144→   144→/** Runs one tick; if a tick is already in flight, callers await that same promise. */
+   145→   145→export async function runTickSerialized(): Promise<TickResult> {
+   146→   146→  if (tickMutex.promise) return tickMutex.promise
+   147→   147→  const p = runTick().finally(() => {
+   148→   148→    tickMutex.promise = null
+   149→   149→  })
+   150→   150→  tickMutex.promise = p
+   151→   151→  return p
+   152→   152→}
+   153→   153→
+   154→   154→// ─── Config handling ─────────────────────────────────────────────────────────
+   155→   155→
+   156→   156→export function parseConfig(raw: string | null | undefined): EngineConfig {
+   157→   157→  const config: EngineConfig = { tickIntervalMs: 6000, llmDiscovery: true, aggression: 0.7 }
+   158→   158→  if (!raw) return config
+   159→   159→  try {
+   160→   160→    const parsed: unknown = JSON.parse(raw)
+   161→   161→    if (typeof parsed !== 'object' || parsed === null) return config
+   162→   162→    const rec = parsed as Record<string, unknown>
+   163→   163→    if (typeof rec.tickIntervalMs === 'number' && Number.isFinite(rec.tickIntervalMs)) {
+   164→   164→      config.tickIntervalMs = Math.min(120_000, Math.max(2_000, Math.round(rec.tickIntervalMs)))
+   165→   165→    }
+   166→   166→    if (typeof rec.llmDiscovery === 'boolean') config.llmDiscovery = rec.llmDiscovery
+   167→   167→    if (typeof rec.aggression === 'number' && Number.isFinite(rec.aggression)) {
+   168→   168→      config.aggression = Math.min(1, Math.max(0, rec.aggression))
+   169→   169→    }
+   170→   170→    return config
+   171→   171→  } catch {
+   172→   172→    return config
+   173→   173→  }
+   174→   174→}
+   175→   175→
+   176→   176→function sanitizeConfigPatch(patch: EngineConfigPatch): EngineConfigPatch {
+   177→   177→  const out: EngineConfigPatch = {}
+   178→   178→  if (typeof patch.tickIntervalMs === 'number' && Number.isFinite(patch.tickIntervalMs)) {
+   179→   179→    out.tickIntervalMs = Math.min(120_000, Math.max(2_000, Math.round(patch.tickIntervalMs)))
+   180→   180→  }
+   181→   181→  if (typeof patch.llmDiscovery === 'boolean') out.llmDiscovery = patch.llmDiscovery
+   182→   182→  if (typeof patch.aggression === 'number' && Number.isFinite(patch.aggression)) {
+   183→   183→    out.aggression = Math.min(1, Math.max(0, patch.aggression))
+   184→   184→  }
+   185→   185→  return out
+   186→   186→}
+   187→   187→
+   188→   188→export async function mergeConfig(patch: EngineConfigPatch): Promise<EngineConfig> {
+   189→   189→  const state = await ensureEngine()
+   190→   190→  const current = parseConfig(state.config)
+   191→   191→  const next: EngineConfig = { ...current, ...sanitizeConfigPatch(patch) }
+   192→   192→  await db.engineState.update({ where: { id: ENGINE_ID }, data: { config: JSON.stringify(next) } })
+   193→   193→  return next
+   194→   194→}
+   195→   195→
+   196→   196→// ─── Singleton + seeding ─────────────────────────────────────────────────────
+   197→   197→
+   198→   198→export async function ensureEngine() {
+   199→   199→  const state = await db.engineState.upsert({
+   200→   200→    where: { id: ENGINE_ID },
+   201→   201→    update: {},
+   202→   202→    create: { id: ENGINE_ID, status: 'running' },
+   203→   203→  })
+   204→   204→
+   205→   205→  const streamCount = await db.domainStream.count()
+   206→   206→  if (streamCount === 0) {
+   207→   207→    await db.domainStream.createMany({
+   208→   208→      data: SEED_STREAMS.map((s) => ({ name: s.name, category: s.category, status: 'active' })),
+   209→   209→    })
+   210→   210→  }
+   211→   211→
+   212→   212→  return state
+   213→   213→}
+   214→   214→
+   215→   215→/** Deletes every engine data row (keeps the singleton EngineState) and re-seeds. */
+   216→   216→export async function resetEngine(): Promise<void> {
+   217→   217→  // RawSignal must be cleared before DomainStream (foreign key).
+   218→   218→  await db.rawSignal.deleteMany()
+   219→   219→  await db.crossDomainLink.deleteMany()
+   220→   220→  await db.layerMetric.deleteMany()
+   221→   221→  await db.insightReport.deleteMany()
+   222→   222→  await db.governanceCheck.deleteMany()
+   223→   223→  await db.hypothesis.deleteMany()
+   224→   224→  await db.breakthrough.deleteMany()
+   225→   225→  await db.domainStream.deleteMany()
+   226→   226→  await db.engineState.update({
+   227→   227→    where: { id: ENGINE_ID },
+   228→   228→    data: { cycles: 0, lastTickAt: new Date(0) },
+   229→   229→  })
+   230→   230→  await ensureEngine()
+   231→   231→}
+   232→   232→
+   233→   233→// ─── JSON parse helpers (typed, defensive) ───────────────────────────────────
+   234→   234→
+   235→   235→function isRecord(v: unknown): v is Record<string, unknown> {
+   236→   236→  return typeof v === 'object' && v !== null && !Array.isArray(v)
+   237→   237→}
+   238→   238→
+   239→   239→function numOr(v: unknown, fallback: number): number {
+   240→   240→  return typeof v === 'number' && Number.isFinite(v) ? v : fallback
+   241→   241→}
+   242→   242→
+   243→   243→function parseNumberRecord(raw: string | null | undefined): Record<string, number> {
+   244→   244→  if (!raw) return {}
+   245→   245→  try {
+   246→   246→    const parsed: unknown = JSON.parse(raw)
+   247→   247→    if (!isRecord(parsed)) return {}
+   248→   248→    const out: Record<string, number> = {}
+   249→   249→    for (const [k, v] of Object.entries(parsed)) {
+   250→   250→      if (typeof v === 'number' && Number.isFinite(v)) out[k] = v
+   251→   251→    }
+   252→   252→    return out
+   253→   253→  } catch {
+   254→   254→    return {}
+   255→   255→  }
+   256→   256→}
+   257→   257→
+   258→   258→function parseStringArray(raw: string | null | undefined): string[] {
+   259→   259→  if (!raw) return []
+   260→   260→  try {
+   261→   261→    const parsed: unknown = JSON.parse(raw)
+   262→   262→    if (!Array.isArray(parsed)) return []
+   263→   263→    return parsed.filter((v): v is string => typeof v === 'string')
+   264→   264→  } catch {
+   265→   265→    return []
+   266→   266→  }
+   267→   267→}
+   268→   268→
+   269→   269→function parseCounterfactuals(raw: string | null | undefined): Counterfactual[] {
+   270→   270→  if (!raw) return []
+   271→   271→  try {
+   272→   272→    const parsed: unknown = JSON.parse(raw)
+   273→   273→    if (!Array.isArray(parsed)) return []
+   274→   274→    const out: Counterfactual[] = []
+   275→   275→    for (const item of parsed) {
+   276→   276→      if (!isRecord(item)) continue
+   277→   277→      if (typeof item.question !== 'string' || typeof item.result !== 'string') continue
+   278→   278→      out.push({
+   279→   279→        question: item.question,
+   280→   280→        result: item.result,
+   281→   281→        supports: item.supports === true,
+   282→   282→      })
+   283→   283→    }
+   284→   284→    return out
+   285→   285→  } catch {
+   286→   286→    return []
+   287→   287→  }
+   288→   288→}
+   289→   289→
+   290→   290→function parseValidation(raw: string | null | undefined): ValidationStats {
+   291→   291→  if (!raw) return { simulations: 0, passed: 0, failed: 0, pValue: 1, effectSize: 0 }
+   292→   292→  try {
+   293→   293→    const parsed: unknown = JSON.parse(raw)
+   294→   294→    if (!isRecord(parsed)) return { simulations: 0, passed: 0, failed: 0, pValue: 1, effectSize: 0 }
+   295→   295→    return {
+   296→   296→      simulations: Math.max(0, Math.round(numOr(parsed.simulations, 0))),
+   297→   297→      passed: Math.max(0, Math.round(numOr(parsed.passed, 0))),
+   298→   298→      failed: Math.max(0, Math.round(numOr(parsed.failed, 0))),
+   299→   299→      pValue: clamp01(numOr(parsed.pValue, 1)),
+   300→   300→      effectSize: numOr(parsed.effectSize, 0),
+   301→   301→    }
+   302→   302→  } catch {
+   303→   303→    return { simulations: 0, passed: 0, failed: 0, pValue: 1, effectSize: 0 }
+   304→   304→  }
+   305→   305→}
+   306→   306→
+   307→   307→function parseSynthesis(raw: string | null | undefined): Synthesis {
+   308→   308→  const fallback: Synthesis = {
+   309→   309→    components: [],
+   310→   310→    mechanism: '',
+   311→   311→    feasibility: 0,
+   312→   312→    expectedGain: '',
+   313→   313→    timeHorizon: '',
+   314→   314→  }
+   315→   315→  if (!raw) return fallback
+   316→   316→  try {
+   317→   317→    const parsed: unknown = JSON.parse(raw)
+   318→   318→    if (!isRecord(parsed)) return fallback
+   319→   319→    return {
+   320→   320→      components: Array.isArray(parsed.components)
+   321→   321→        ? parsed.components.filter((v): v is string => typeof v === 'string')
+   322→   322→        : [],
+   323→   323→      mechanism: typeof parsed.mechanism === 'string' ? parsed.mechanism : '',
+   324→   324→      feasibility: clamp01(numOr(parsed.feasibility, 0)),
+   325→   325→      expectedGain: typeof parsed.expectedGain === 'string' ? parsed.expectedGain : '',
+   326→   326→      timeHorizon: typeof parsed.timeHorizon === 'string' ? parsed.timeHorizon : '',
+   327→   327→    }
+   328→   328→  } catch {
+   329→   329→    return fallback
+   330→   330→  }
+   331→   331→}
+   332→   332→
+   333→   333→// ─── Layer 1 + 2: ingest & score ─────────────────────────────────────────────
+   334→   334→
+   335→   335→interface IngestSummary {
+   336→   336→  ingested: number
+   337→   337→  streams: number
+   338→   338→  anomalies: number
+   339→   339→  promoted: number
+   340→   340→  avgAnomaly: number
+   341→   341→  avgNovelty: number
+   342→   342→}
+   343→   343→
+   344→   344→async function runInputLayers(cycle: number): Promise<IngestSummary> {
+   345→   345→  const streams = await db.domainStream.findMany({ where: { status: 'active' } })
+   346→   346→  const signals: Array<{
+   347→   347→    streamId: string
+   348→   348→    category: string
+   349→   349→    title: string
+   350→   350→    content: string
+   351→   351→    features: string
+   352→   352→    anomalyScore: number
+   353→   353→    noveltyScore: number
+   354→   354→    cycle: number
+   355→   355→    promoted: boolean
+   356→   356→  }> = []
+   357→   357→  const perStreamCounts: Array<{ id: string; count: number; velocity: number; health: number }> = []
+   358→   358→
+   359→   359→  for (const stream of streams) {
+   360→   360→    const count = randInt(1, 4)
+   361→   361→    const generated = generateSignals(stream.category, count)
+   362→   362→    for (const g of generated) {
+   363→   363→      signals.push({
+   364→   364→        streamId: stream.id,
+   365→   365→        category: stream.category,
+   366→   366→        title: g.title,
+   367→   367→        content: g.content,
+   368→   368→        features: JSON.stringify(g.features),
+   369→   369→        anomalyScore: g.anomalyScore,
+   370→   370→        noveltyScore: g.noveltyScore,
+   371→   371→        cycle,
+   372→   372→        promoted: false,
+   373→   373→      })
+   374→   374→    }
+   375→   375→    // Layer 1 stream bookkeeping: velocity is an EWMA of batch pressure.
+   376→   376→    perStreamCounts.push({
+   377→   377→      id: stream.id,
+   378→   378→      count,
+   379→   379→      velocity: round3(clamp01(stream.velocity * 0.6 + (count / 4) * 0.4)),
+   380→   380→      health: round3(clamp01(Math.max(0.55, stream.health + rand(-0.03, 0.03)))),
+   381→   381→    })
+   382→   382→  }
+   383→   383→
+   384→   384→  // Layer 2: promote the top anomalies (cap 3/cycle; always promote at least one).
+   385→   385→  const order = signals
+   386→   386→    .map((s, i) => ({ i, score: s.anomalyScore }))
+   387→   387→    .sort((a, b) => b.score - a.score)
+   388→   388→  let promotedCount = 0
+   389→   389→  for (const { i, score } of order) {
+   390→   390→    if (promotedCount >= 3 || score < 0.8) break
+   391→   391→    signals[i].promoted = true
+   392→   392→    promotedCount++
+   393→   393→  }
+   394→   394→  if (promotedCount === 0 && order.length > 0) {
+   395→   395→    signals[order[0].i].promoted = true
+   396→   396→    promotedCount = 1
+   397→   397→  }
+   398→   398→
+   399→   399→  if (signals.length > 0) await db.rawSignal.createMany({ data: signals })
+   400→   400→  for (const s of perStreamCounts) {
+   401→   401→    await db.domainStream.update({
+   402→   402→      where: { id: s.id },
+   403→   403→      data: {
+   404→   404→        itemsIngested: { increment: s.count },
+   405→   405→        velocity: s.velocity,
+   406→   406→        health: s.health,
+   407→   407→      },
+   408→   408→    })
+   409→   409→  }
+   410→   410→
+   411→   411→  const anomalyScores = signals.map((s) => s.anomalyScore)
+   412→   412→  const noveltyScores = signals.map((s) => s.noveltyScore)
+   413→   413→  const avg = (arr: number[]) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0)
+   414→   414→
+   415→   415→  return {
+   416→   416→    ingested: signals.length,
+   417→   417→    streams: streams.length,
+   418→   418→    anomalies: anomalyScores.filter((v) => v >= ANOMALY_THRESHOLD).length,
+   419→   419→    promoted: promotedCount,
+   420→   420→    avgAnomaly: round3(avg(anomalyScores)),
+   421→   421→    avgNovelty: round3(avg(noveltyScores)),
+   422→   422→  }
+   423→   423→}
+   424→   424→
+   425→   425→// ─── Layer 4: discovery ──────────────────────────────────────────────────────
+   426→   426→
+   427→   427→interface CandidateHypothesis {
+   428→   428→  title: string
+   429→   429→  summary: string
+   430→   430→  domains: string[]
+   431→   431→  novelty: number
+   432→   432→  impact: number
+   433→   433→  confidence: number
+   434→   434→  counterfactuals: Counterfactual[]
+   435→   435→}
+   436→   436→
+   437→   437→interface DiscoveredHypothesis {
+   438→   438→  id: string
+   439→   439→  data: CandidateHypothesis
+   440→   440→  validation: ValidationStats
+   441→   441→  status: 'validated' | 'rejected'
+   442→   442→}
+   443→   443→
+   444→   444→function simulateValidation(
+   445→   445→  h: CandidateHypothesis,
+   446→   446→  aggression: number,
+   447→   447→): { validation: ValidationStats; status: 'validated' | 'rejected' } {
+   448→   448→  const simulations = randInt(200, 2000)
+   449→   449→  const threshold = Math.min(0.6, 0.05 + h.confidence * aggression)
+   450→   450→  const successBranch = Math.random() < clamp01(0.2 + h.confidence * 0.4 * aggression)
+   451→   451→  const pValue = successBranch
+   452→   452→    ? Math.pow(Math.random(), 3) * (0.05 + h.confidence * aggression)
+   453→   453→    : rand(0.05, 0.9)
+   454→   454→  const validated = pValue < threshold
+   455→   455→  const passRate = clamp01(1 - pValue * 1.6 + rand(-0.04, 0.08))
+   456→   456→  const passed = Math.min(simulations, Math.max(0, Math.round(simulations * passRate)))
+   457→   457→  return {
+   458→   458→    validation: {
+   459→   459→      simulations,
+   460→   460→      passed,
+   461→   461→      failed: simulations - passed,
+   462→   462→      pValue: round3(Math.min(1, Math.max(0.001, pValue))),
+   463→   463→      effectSize: validated ? round3(rand(0.4, 1.6)) : round3(rand(0.02, 0.3)),
+   464→   464→    },
+   465→   465→    status: validated ? 'validated' : 'rejected',
+   466→   466→  }
+   467→   467→}
+   468→   468→
+   469→   469→async function runDiscoveryLayer(
+   470→   470→  cycle: number,
+   471→   471→  aggression: number,
+   472→   472→  llmDiscovery: boolean,
+   473→   473→): Promise<{ hypotheses: DiscoveredHypothesis[]; llmUsed: boolean }> {
+   474→   474→  const hot = await db.rawSignal.findMany({
+   475→   475→    where: {
+   476→   476→      cycle: { gte: cycle - 1 },
+   477→   477→      OR: [{ promoted: true }, { anomalyScore: { gte: ANOMALY_THRESHOLD } }],
+   478→   478→    },
+   479→   479→    orderBy: { anomalyScore: 'desc' },
+   480→   480→    take: 8,
+   481→   481→  })
+   482→   482→
+   483→   483→  let candidates: CandidateHypothesis[] = []
+   484→   484→  let llmUsed = false
+   485→   485→
+   486→   486→  if (llmDiscovery && hot.length > 0) {
+   487→   487→    const llm = await generateHypothesesWithLlm(hot.map((s) => s.title))
+   488→   488→    if (llm && llm.length > 0) {
+   489→   489→      candidates = llm
+   490→   490→      llmUsed = true
+   491→   491→    }
+   492→   492→  }
+   493→   493→  if (candidates.length === 0) {
+   494→   494→    const categories = hot.map((s) => s.category)
+   495→   495→    candidates = generateTemplateHypotheses(categories, randInt(2, 3))
+   496→   496→  }
+   497→   497→
+   498→   498→  const sourceSignals = hot.slice(0, 4).map((s) => s.title)
+   499→   499→
+   500→   500→  const created = await Promise.all(
+   501→   501→    candidates.map(async (c) => {
+   502→   502→      const row = await db.hypothesis.create({
+   503→   503→        data: {
+   504→   504→          title: c.title.slice(0, 300),
+   505→   505→          summary: c.summary.slice(0, 2000),
+   506→   506→          domains: JSON.stringify(c.domains),
+   507→   507→          novelty: c.novelty,
+   508→   508→          impact: c.impact,
+   509→   509→          confidence: c.confidence,
+   510→   510→          status: 'testing',
+   511→   511→          counterfactuals: JSON.stringify(c.counterfactuals),
+   512→   512→          sourceSignals: JSON.stringify(sourceSignals),
+   513→   513→          generator: llmUsed ? 'llm' : 'template',
+   514→   514→          cycle,
+   515→   515→        },
+   516→   516→      })
+   517→   517→      return row
+   518→   518→    }),
+   519→   519→  )
+   520→   520→
+   521→   521→  const hypotheses: DiscoveredHypothesis[] = []
+   522→   522→  for (let i = 0; i < created.length; i++) {
+   523→   523→    const { validation, status } = simulateValidation(candidates[i], aggression)
+   524→   524→    await db.hypothesis.update({ where: { id: created[i].id }, data: { status, validation: JSON.stringify(validation) } })
+   525→   525→    hypotheses.push({ id: created[i].id, data: candidates[i], validation, status })
+   526→   526→  }
+   527→   527→
+   528→   528→  return { hypotheses, llmUsed }
+   529→   529→}
+   530→   530→
+   531→   531→// ─── Pruning (best-effort, never blocks a tick) ──────────────────────────────
+   532→   532→
+   533→   533→async function pruneTable(
+   534→   534→  findRecent: (take: number, skip: number) => Promise<Array<{ createdAt: Date }>>,
+   535→   535→  deleteOlderThan: (createdAt: Date) => Promise<unknown>,
+   536→   536→  keep: number,
+   537→   537→): Promise<void> {
+   538→   538→  try {
+   539→   539→    const rows = await findRecent(1, keep - 1)
+   540→   540→    if (rows.length === 0) return
+   541→   541→    await deleteOlderThan(rows[0].createdAt)
+   542→   542→  } catch (error) {
+   543→   543→    console.error('[engine/core] prune failed:', error)
+   544→   544→  }
+   545→   545→}
+   546→   546→
+   547→   547→async function pruneAll(): Promise<void> {
+   548→   548→  await pruneTable(
+   549→   549→    (take, skip) => db.rawSignal.findMany({ orderBy: { createdAt: 'desc' }, take, skip, select: { createdAt: true } }),
+   550→   550→    (createdAt) => db.rawSignal.deleteMany({ where: { createdAt: { lt: createdAt } } }),
+   551→   551→    PRUNE_TARGETS.rawSignal,
+   552→   552→  )
+   553→   553→  await pruneTable(
+   554→   554→    (take, skip) => db.crossDomainLink.findMany({ orderBy: { createdAt: 'desc' }, take, skip, select: { createdAt: true } }),
+   555→   555→    (createdAt) => db.crossDomainLink.deleteMany({ where: { createdAt: { lt: createdAt } } }),
+   556→   556→    PRUNE_TARGETS.crossDomainLink,
+   557→   557→  )
+   558→   558→  await pruneTable(
+   559→   559→    (take, skip) => db.layerMetric.findMany({ orderBy: { createdAt: 'desc' }, take, skip, select: { createdAt: true } }),
+   560→   560→    (createdAt) => db.layerMetric.deleteMany({ where: { createdAt: { lt: createdAt } } }),
+   561→   561→    PRUNE_TARGETS.layerMetric,
+   562→   562→  )
+   563→   563→  await pruneTable(
+   564→   564→    (take, skip) => db.insightReport.findMany({ orderBy: { createdAt: 'desc' }, take, skip, select: { createdAt: true } }),
+   565→   565→    (createdAt) => db.insightReport.deleteMany({ where: { createdAt: { lt: createdAt } } }),
+   566→   566→    PRUNE_TARGETS.insightReport,
+   567→   567→  )
+   568→   568→  await pruneTable(
+   569→   569→    (take, skip) => db.governanceCheck.findMany({ orderBy: { createdAt: 'desc' }, take, skip, select: { createdAt: true } }),
+   570→   570→    (createdAt) => db.governanceCheck.deleteMany({ where: { createdAt: { lt: createdAt } } }),
+   571→   571→    PRUNE_TARGETS.governanceCheck,
+   572→   572→  )
+   573→   573→}
+   574→   574→
+   575→   575→// ─── runTick: the full 8-layer pipeline ──────────────────────────────────────
+   576→   576→
+   577→   577→async function runTick(): Promise<TickResult> {
+   578→   578→  const startedAt = Date.now()
+   579→   579→  const state = await ensureEngine()
+   580→   580→  const config = parseConfig(state.config)
+   581→   581→  const cycle = state.cycles + 1
+   582→   582→
+   583→   583→  // ── Layer 1 + 2: INPUT UNIVERSE + PREPROCESSING ──
+   584→   584→  const ingest = await runInputLayers(cycle)
+   585→   585→  const metricWrites: Array<{ layer: number; key: string; value: number }> = [
+   586→   586→    { layer: 1, key: 'ingested', value: ingest.ingested },
+   587→   587→    { layer: 1, key: 'streams', value: ingest.streams },
+   588→   588→    { layer: 1, key: 'anomalies', value: ingest.anomalies },
+   589→   589→    { layer: 2, key: 'promoted', value: ingest.promoted },
+   590→   590→    { layer: 2, key: 'avgAnomaly', value: ingest.avgAnomaly },
+   591→   591→    { layer: 2, key: 'avgNovelty', value: ingest.avgNovelty },
+   592→   592→  ]
+   593→   593→
+   594→   594→  // ── Layer 3: MULTI-DOMAIN ANALYSIS ──
+   595→   595→  const streamRows = await db.domainStream.findMany({ where: { status: 'active' }, select: { category: true } })
+   596→   596→  const domainPool = streamRows.map((s) => s.category).filter(isCategory)
+   597→   597→  const linkCount = randInt(2, 4)
+   598→   598→  for (let i = 0; i < linkCount; i++) {
+   599→   599→    let source = domainPool.length >= 2 ? pick(domainPool) : pick(CATEGORIES)
+   600→   600→    let target = domainPool.length >= 2 ? pick(domainPool) : pick(CATEGORIES)
+   601→   601→    let guard = 0
+   602→   602→    while (target === source && guard++ < 10) target = domainPool.length >= 2 ? pick(domainPool) : pick(CATEGORIES)
+   603→   603→    if (target === source) continue
+   604→   604→    await db.crossDomainLink.create({
+   605→   605→      data: {
+   606→   606→        sourceDomain: source,
+   607→   607→        targetDomain: target,
+   608→   608→        strength: round3(rand(0.4, 0.98)),
+   609→   609→        mechanism: mechanismBetween(source, target),
+   610→   610→        cycle,
+   611→   611→      },
+   612→   612→    })
+   613→   613→  }
+   614→   614→  const velocity = round3(clamp01(rand(0.15, 0.85) + ingest.avgAnomaly * 0.2))
+   615→   615→  const acceleration = round3(rand(-0.2, 0.35))
+   616→   616→  metricWrites.push(
+   617→   617→    { layer: 3, key: 'crossLinks', value: linkCount },
+   618→   618→    { layer: 3, key: 'velocity', value: velocity },
+   619→   619→    { layer: 3, key: 'acceleration', value: acceleration },
+   620→   620→  )
+   621→   621→
+   622→   622→  // ── Layer 4: DISCOVERY (LLM-enhanced, template fallback) ──
+   623→   623→  const { hypotheses, llmUsed } = await runDiscoveryLayer(cycle, config.aggression, config.llmDiscovery)
+   624→   624→  const validated = hypotheses.filter((h) => h.status === 'validated')
+   625→   625→  metricWrites.push(
+   626→   626→    { layer: 4, key: 'generated', value: hypotheses.length },
+   627→   627→    { layer: 4, key: 'validated', value: validated.length },
+   628→   628→  )
+   629→   629→
+   630→   630→  // ── Layer 5: BREAKTHROUGH SYNTHESIS ──
+   631→   631→  const newBreakthroughs: Array<{
+   632→   632→    id: string
+   633→   633→    title: string
+   634→   634→    solutionType: string
+   635→   635→    impactRank: number
+   636→   636→    gov: ReturnType<typeof buildGovernanceContent>
+   637→   637→  }> = []
+   638→   638→  for (const h of validated) {
+   639→   639→    if (h.data.impact < 0.6) continue
+   640→   640→    const solutionType = deriveSolutionType(h.data.domains)
+   641→   641→    const synthesis = buildSynthesis(solutionType, h.data.domains)
+   642→   642→    const impactRank = round3(h.data.impact * 0.7 + h.data.novelty * 0.3)
+   643→   643→    const gov = buildGovernanceContent(solutionType, h.data.domains)
+   644→   644→    const breakthrough = await db.breakthrough.create({
+   645→   645→      data: {
+   646→   646→        hypothesisId: h.id,
+   647→   647→        title: h.data.title.slice(0, 300),
+   648→   648→        solutionType,
+   649→   649→        summary: buildBreakthroughSummary(solutionType, synthesis),
+   650→   650→        synthesis: JSON.stringify(synthesis),
+   651→   651→        impactRank,
+   652→   652→        riskScore: gov.riskScore,
+   653→   653→        status: 'synthesized',
+   654→   654→        cycle,
+   655→   655→      },
+   656→   656→    })
+   657→   657→    newBreakthroughs.push({
+   658→   658→      id: breakthrough.id,
+   659→   659→      title: breakthrough.title,
+   660→   660→      solutionType,
+   661→   661→      impactRank,
+   662→   662→      gov,
+   663→   663→    })
+   664→   664→    await db.hypothesis.update({ where: { id: h.id }, data: { status: 'promoted' } })
+   665→   665→  }
+   666→   666→  metricWrites.push({ layer: 5, key: 'synthesized', value: newBreakthroughs.length })
+   667→   667→
+   668→   668→  // ── Layer 6: AUTONOMOUS OPTIMIZATION ──
+   669→   669→  const successRate = hypotheses.length > 0 ? round3(validated.length / hypotheses.length) : 0
+   670→   670→  const blindSpotScore = round3(clamp01(rand(0.05, 0.6)))
+   671→   671→  metricWrites.push(
+   672→   672→    { layer: 6, key: 'successRate', value: successRate },
+   673→   673→    { layer: 6, key: 'avgNovelty', value: ingest.avgNovelty },
+   674→   674→    { layer: 6, key: 'blindSpotScore', value: blindSpotScore },
+   675→   675→  )
+   676→   676→
+   677→   677→  // ── Layer 7: GOVERNANCE ──
+   678→   678→  let governed = 0
+   679→   679→  let flagged = 0
+   680→   680→  for (const bt of newBreakthroughs) {
+   681→   681→    const passed = bt.gov.riskScore < 0.35
+   682→   682→    await db.governanceCheck.create({
+   683→   683→      data: {
+   684→   684→        targetType: 'breakthrough',
+   685→   685→        targetId: bt.id,
+   686→   686→        targetTitle: bt.title,
+   687→   687→        riskScore: bt.gov.riskScore,
+   688→   688→        ethicalFlags: JSON.stringify(bt.gov.ethicalFlags),
+   689→   689→        validationStatus: passed ? 'passed' : 'flagged',
+   690→   690→        humanReview: !passed,
+   691→   691→        notes: bt.gov.notes,
+   692→   692→        cycle,
+   693→   693→      },
+   694→   694→    })
+   695→   695→    if (passed) {
+   696→   696→      governed++
+   697→   697→      await db.breakthrough.update({ where: { id: bt.id }, data: { status: 'governed' } })
+   698→   698→    } else {
+   699→   699→      flagged++
+   700→   700→    }
+   701→   701→  }
+   702→   702→  metricWrites.push(
+   703→   703→    { layer: 7, key: 'checked', value: newBreakthroughs.length },
+   704→   704→    { layer: 7, key: 'passed', value: governed },
+   705→   705→    { layer: 7, key: 'flagged', value: flagged },
+   706→   706→  )
+   707→   707→
+   708→   708→  // ── Layer 8: INSIGHT OUTPUT ──
+   709→   709→  // cycle-summary every cycle + alerts (impactRank > 0.8) + blind-spot deep-dive (10%)
+   710→   710→  const reports: Array<{ title: string; reportType: string; content: string }> = [
+   711→   711→    {
+   712→   712→      title: `Cycle ${cycle} Summary`,
+   713→   713→      reportType: 'cycle-summary',
+   714→   714→      content: buildCycleSummary({
+   715→   715→        cycle,
+   716→   716→        signals: ingest.ingested,
+   717→   717→        anomalies: ingest.anomalies,
+   718→   718→        hypotheses: hypotheses.length,
+   719→   719→        validated: validated.length,
+   720→   720→        breakthroughs: newBreakthroughs.length,
+   721→   721→        governed,
+   722→   722→        flagged,
+   723→   723→      }),
+   724→   724→    },
+   725→   725→  ]
+   726→   726→  for (const bt of newBreakthroughs) {
+   727→   727→    if (bt.impactRank > 0.8) {
+   728→   728→      const alert = buildAlertReport({
+   729→   729→        title: bt.title,
+   730→   730→        impactRank: bt.impactRank,
+   731→   731→        solutionType: bt.solutionType,
+   732→   732→        riskScore: bt.gov.riskScore,
+   733→   733→        status: bt.gov.riskScore < 0.35 ? 'passed' : 'flagged',
+   734→   734→      })
+   735→   735→      reports.push({ ...alert, reportType: 'alert' })
+   736→   736→    }
+   737→   737→  }
+   738→   738→  if (chance(0.1)) {
+   739→   739→    const weakest = await db.domainStream.findFirst({ orderBy: { health: 'asc' } })
+   740→   740→    if (weakest) {
+   741→   741→      const deepDive = buildBlindSpotReport({
+   742→   742→        cycle,
+   743→   743→        streamName: weakest.name,
+   744→   744→        health: weakest.health,
+   745→   745→        velocity: weakest.velocity,
+   746→   746→        successRate,
+   747→   747→      })
+   748→   748→      reports.push({ ...deepDive, reportType: 'deep-dive' })
+   749→   749→    }
+   750→   750→  }
+   751→   751→
+   752→   752→  const persistedReports = await Promise.all(
+   753→   753→    reports.map((r) =>
+   754→   754→      db.insightReport.create({
+   755→   755→        data: { title: r.title, reportType: r.reportType, content: r.content, cycle },
+   756→   756→      }),
+   757→   757→    ),
+   758→   758→  )
+   759→   759→  const alertCount = persistedReports.filter((r) => r.reportType === 'alert').length
+   760→   760→  metricWrites.push(
+   761→   761→    { layer: 8, key: 'reportsPublished', value: persistedReports.length },
+   762→   762→    { layer: 8, key: 'alerts', value: alertCount },
+   763→   763→  )
+   764→   764→
+   765→   765→  // Persist all layer metrics.
+   766→   766→  await db.layerMetric.createMany({ data: metricWrites.map((m) => ({ ...m, cycle })) })
+   767→   767→
+   768→   768→  // Close the cycle.
+   769→   769→  await db.engineState.update({
+   770→   770→    where: { id: ENGINE_ID },
+   771→   771→    data: { cycles: cycle, lastTickAt: new Date() },
+   772→   772→  })
+   773→   773→
+   774→   774→  // Prune (best-effort) to keep the SQLite file small.
+   775→   775→  await pruneAll()
+   776→   776→
+   777→   777→  const result: TickResult = {
+   778→   778→    cycle,
+   779→   779→    signals: ingest.ingested,
+   780→   780→    anomalies: ingest.anomalies,
+   781→   781→    promoted: ingest.promoted,
+   782→   782→    crossLinks: linkCount,
+   783→   783→    hypotheses: hypotheses.length,
+   784→   784→    validated: validated.length,
+   785→   785→    rejected: hypotheses.length - validated.length,
+   786→   786→    breakthroughs: newBreakthroughs.length,
+   787→   787→    governed,
+   788→   788→    flagged,
+   789→   789→    reports: persistedReports.length,
+   790→   790→    llmUsed,
+   791→   791→    durationMs: Date.now() - startedAt,
+   792→   792→  }
+   793→   793→  console.log(
+   794→   794→    `[engine/core] cycle ${cycle} done in ${result.durationMs}ms — signals=${result.signals} ` +
+   795→   795→      `hypotheses=${result.hypotheses} (validated=${result.validated}) breakthroughs=${result.breakthroughs} ` +
+   796→   796→      `llm=${result.llmUsed ? 'on' : 'off'}`,
+   797→   797→  )
+   798→   798→  return result
+   799→   799→}
+   800→   800→
+   801→   801→// ─── getState: dashboard payload assembly ────────────────────────────────────
+   802→   802→
+   803→   803→interface LayerMetricBundle {
+   804→   804→  metrics: Record<string, number>
+   805→   805→  hasActivity: boolean
+   806→   806→}
+   807→   807→
+   808→   808→function buildLayers(
+   809→   809→  engineStatus: string,
+   810→   810→  latestCycle: number,
+   811→   811→  byLayer: Map<number, Record<string, number>>,
+   812→   812→): LayerStatus[] {
+   813→   813→  return LAYER_DEFS.map((def) => {
+   814→   814→    const metrics: Record<string, number> = {}
+   815→   815→    for (const key of LAYER_METRIC_KEYS[def.key]) {
+   816→   816→      metrics[key] = round2(byLayer.get(def.layer)?.[key] ?? 0)
+   817→   817→    }
+   818→   818→    const hasActivity = byLayer.has(def.layer) && latestCycle > 0
+   819→   819→    const loadCfg = LAYER_LOAD[def.key]
+   820→   820→    const load = clamp01((byLayer.get(def.layer)?.[loadCfg.key] ?? 0) / loadCfg.max)
+   821→   821→    const state: LayerStatus['state'] =
+   822→   822→      engineStatus !== 'running' ? 'blocked' : hasActivity ? 'active' : 'idle'
+   823→   823→    return {
+   824→   824→      layer: def.layer,
+   825→   825→      key: def.key,
+   826→   826→      name: def.name,
+   827→   827→      purpose: def.purpose,
+   828→   828→      state,
+   829→   829→      load: round2(load),
+   830→   830→      metrics,
+   831→   831→    }
+   832→   832→  })
+   833→   833→}
+   834→   834→
+   835→   835→async function buildAnalytics(): Promise<AnalyticsDTO> {
+   836→   836→  const [perCycleAll, perCycleAnom, byCategory] = await Promise.all([
+   837→   837→    db.rawSignal.groupBy({ by: ['cycle'], _count: { _all: true } }),
+   838→   838→    db.rawSignal.groupBy({ by: ['cycle'], _count: { _all: true }, where: { anomalyScore: { gte: ANOMALY_THRESHOLD } } }),
+   839→   839→    db.rawSignal.groupBy({ by: ['category'], _count: { _all: true } }),
+   840→   840→  ])
+   841→   841→
+   842→   842→  const anomalyByCycle = new Map<number, number>()
+   843→   843→  for (const row of perCycleAnom) anomalyByCycle.set(row.cycle, row._count._all)
+   844→   844→  const signalsPerCycle = perCycleAll
+   845→   845→    .map((row) => ({
+   846→   846→      cycle: row.cycle,
+   847→   847→      signals: row._count._all,
+   848→   848→      anomalies: anomalyByCycle.get(row.cycle) ?? 0,
+   849→   849→    }))
+   850→   850→    .sort((a, b) => a.cycle - b.cycle)
+   851→   851→    .slice(-30)
+   852→   852→
+   853→   853→  const domainDistribution = byCategory
+   854→   854→    .map((row) => ({ domain: row.category, count: row._count._all }))
+   855→   855→    .sort((a, b) => b.count - a.count)
+   856→   856→
+   857→   857→  const hypForScatter = await db.hypothesis.findMany({
+   858→   858→    orderBy: { createdAt: 'desc' },
+   859→   859→    take: 60,
+   860→   860→    select: { id: true, title: true, novelty: true, impact: true, status: true },
+   861→   861→  })
+   862→   862→
+   863→   863→  const latestPerLayer = await Promise.all(
+   864→   864→    [1, 2, 3, 4, 5, 6, 7, 8].map((layer) =>
+   865→   865→      db.layerMetric.findFirst({
+   866→   866→        where: { layer },
+   867→   867→        orderBy: [{ cycle: 'desc' }, { createdAt: 'desc' }],
+   868→   868→        select: { value: true },
+   869→   869→      }),
+   870→   870→    ),
+   871→   871→  )
+   872→   872→  const layerThroughput = [1, 2, 3, 4, 5, 6, 7, 8].map((layer, i) => ({
+   873→   873→    layer,
+   874→   874→    value: round2(latestPerLayer[i]?.value ?? 0),
+   875→   875→  }))
+   876→   876→
+   877→   877→  const optimizationRows = await db.layerMetric.findMany({
+   878→   878→    where: { layer: 6 },
+   879→   879→    orderBy: { cycle: 'asc' },
+   880→   880→    select: { cycle: true, key: true, value: true },
+   881→   881→  })
+   882→   882→  const optimizationByCycle = new Map<number, { successRate: number; avgNovelty: number }>()
+   883→   883→  for (const row of optimizationRows) {
+   884→   884→    const entry = optimizationByCycle.get(row.cycle) ?? { successRate: 0, avgNovelty: 0 }
+   885→   885→    if (row.key === 'successRate') entry.successRate = round2(row.value)
+   886→   886→    if (row.key === 'avgNovelty') entry.avgNovelty = round2(row.value)
+   887→   887→    optimizationByCycle.set(row.cycle, entry)
+   888→   888→  }
+   889→   889→  const optimizationTrend = [...optimizationByCycle.entries()]
+   890→   890→    .map(([cycle, v]) => ({ cycle, ...v }))
+   891→   891→    .sort((a, b) => a.cycle - b.cycle)
+   892→   892→    .slice(-30)
+   893→   893→
+   894→   894→  return {
+   895→   895→    signalsPerCycle,
+   896→   896→    domainDistribution,
+   897→   897→    noveltyImpact: hypForScatter.map((h) => ({
+   898→   898→      id: h.id,
+   899→   899→      title: h.title,
+   900→   900→      novelty: round2(h.novelty),
+   901→   901→      impact: round2(h.impact),
+   902→   902→      status: h.status,
+   903→   903→    })),
+   904→   904→    layerThroughput,
+   905→   905→    optimizationTrend,
+   906→   906→  }
+   907→   907→}
+   908→   908→
+   909→   909→export async function getState(): Promise<EngineStateResponse> {
+   910→   910→  // ensureEngine + auto-tick when due (the dashboard polls this every ~4s).
+   911→   911→  // The tick is fired in the BACKGROUND (not awaited): LLM discovery cycles can
+   912→   912→  // take ~10s, and blocking the response on them would make the UI sluggish.
+   913→   913→  // The dashboard picks up the results on its next poll a few seconds later.
+   914→   914→  const initial = await ensureEngine()
+   915→   915→  const cfg = parseConfig(initial.config)
+   916→   916→  const due =
+   917→   917→    initial.status === 'running' && Date.now() - initial.lastTickAt.getTime() >= cfg.tickIntervalMs
+   918→   918→  if (due && !tickMutex.promise) {
+   919→   919→    void runTickSerialized().catch((err) => console.error('[engine] background tick failed:', err))
+   920→   920→  }
+   921→   921→
+   922→   922→  const state = await ensureEngine()
+   923→   923→  const config = parseConfig(state.config)
+   924→   924→  const engineStatus: 'running' | 'paused' = state.status === 'paused' ? 'paused' : 'running'
+   925→   925→
+   926→   926→  const [streamRows, signalRows, hypothesisRows, breakthroughRows, governanceRows, linkRows, reportRows] =
+   927→   927→    await Promise.all([
+   928→   928→      db.domainStream.findMany({ orderBy: { name: 'asc' }, include: { _count: { select: { signals: true } } } }),
+   929→   929→      db.rawSignal.findMany({ orderBy: { createdAt: 'desc' }, take: 24, include: { stream: { select: { name: true } } } }),
+   930→   930→      db.hypothesis.findMany({ orderBy: { createdAt: 'desc' }, take: 24 }),
+   931→   931→      db.breakthrough.findMany({ orderBy: { createdAt: 'desc' }, take: 12 }),
+   932→   932→      db.governanceCheck.findMany({ orderBy: { createdAt: 'desc' }, take: 15 }),
+   933→   933→      db.crossDomainLink.findMany({ orderBy: { createdAt: 'desc' }, take: 20 }),
+   934→   934→      db.insightReport.findMany({ orderBy: { createdAt: 'desc' }, take: 10 }),
+   935→   935→    ])
+   936→   936→
+   937→   937→  const streams: StreamDTO[] = streamRows.map((s) => ({
+   938→   938→    id: s.id,
+   939→   939→    name: s.name,
+   940→   940→    category: s.category,
+   941→   941→    status: s.status,
+   942→   942→    itemsIngested: s.itemsIngested,
+   943→   943→    velocity: round2(s.velocity),
+   944→   944→    health: round2(s.health),
+   945→   945→    signalCount: s._count.signals,
+   946→   946→  }))
+   947→   947→
+   948→   948→  const signals: SignalDTO[] = signalRows.map((s) => ({
+   949→   949→    id: s.id,
+   950→   950→    streamName: s.stream.name,
+   951→   951→    category: s.category,
+   952→   952→    title: s.title,
+   953→   953→    content: s.content,
+   954→   954→    anomalyScore: round3(s.anomalyScore),
+   955→   955→    noveltyScore: round3(s.noveltyScore),
+   956→   956→    features: parseNumberRecord(s.features),
+   957→   957→    cycle: s.cycle,
+   958→   958→    createdAt: s.createdAt.toISOString(),
+   959→   959→  }))
+   960→   960→
+   961→   961→  const hypotheses: HypothesisDTO[] = hypothesisRows.map((h) => ({
+   962→   962→    id: h.id,
+   963→   963→    title: h.title,
+   964→   964→    summary: h.summary,
+   965→   965→    domains: parseStringArray(h.domains),
+   966→   966→    novelty: round3(h.novelty),
+   967→   967→    impact: round3(h.impact),
+   968→   968→    confidence: round3(h.confidence),
+   969→   969→    status: h.status,
+   970→   970→    counterfactuals: parseCounterfactuals(h.counterfactuals),
+   971→   971→    validation: parseValidation(h.validation),
+   972→   972→    generator: h.generator,
+   973→   973→    cycle: h.cycle,
+   974→   974→    createdAt: h.createdAt.toISOString(),
+   975→   975→  }))
+   976→   976→
+   977→   977→  const breakthroughs: BreakthroughDTO[] = breakthroughRows.map((b) => ({
+   978→   978→    id: b.id,
+   979→   979→    hypothesisId: b.hypothesisId,
+   980→   980→    title: b.title,
+   981→   981→    solutionType: b.solutionType,
+   982→   982→    summary: b.summary,
+   983→   983→    synthesis: parseSynthesis(b.synthesis),
+   984→   984→    impactRank: round3(b.impactRank),
+   985→   985→    riskScore: round3(b.riskScore),
+   986→   986→    status: b.status,
+   987→   987→    cycle: b.cycle,
+   988→   988→    createdAt: b.createdAt.toISOString(),
+   989→   989→  }))
+   990→   990→
+   991→   991→  const governance: GovernanceDTO[] = governanceRows.map((g) => ({
+   992→   992→    id: g.id,
+   993→   993→    targetType: g.targetType,
+   994→   994→    targetId: g.targetId,
+   995→   995→    targetTitle: g.targetTitle,
+   996→   996→    riskScore: round3(g.riskScore),
+   997→   997→    ethicalFlags: parseStringArray(g.ethicalFlags),
+   998→   998→    validationStatus: g.validationStatus,
+   999→   999→    humanReview: g.humanReview,
+  1000→  1000→    reviewDecision: g.reviewDecision,
+  1001→  1001→    notes: g.notes,
+  1002→  1002→    cycle: g.cycle,
+  1003→  1003→    createdAt: g.createdAt.toISOString(),
+  1004→  1004→  }))
+  1005→  1005→
+  1006→  1006→  const correlations: CorrelationDTO[] = linkRows.map((l) => ({
+  1007→  1007→    id: l.id,
+  1008→  1008→    sourceDomain: l.sourceDomain,
+  1009→  1009→    targetDomain: l.targetDomain,
+  1010→  1010→    strength: round3(l.strength),
+  1011→  1011→    mechanism: l.mechanism,
+  1012→  1012→  }))
+  1013→  1013→
+  1014→  1014→  const reports: ReportDTO[] = reportRows.map((r) => ({
+  1015→  1015→    id: r.id,
+  1016→  1016→    title: r.title,
+  1017→  1017→    reportType: r.reportType,
+  1018→  1018→    content: r.content,
+  1019→  1019→    cycle: r.cycle,
+  1020→  1020→    createdAt: r.createdAt.toISOString(),
+  1021→  1021→  }))
+  1022→  1022→
+  1023→  1023→  // Layer state assembly from the latest cycle's LayerMetric rows.
+  1024→  1024→  const latestMetric = await db.layerMetric.findFirst({ orderBy: { cycle: 'desc' }, select: { cycle: true } })
+  1025→  1025→  const latestCycle = latestMetric?.cycle ?? 0
+  1026→  1026→  const latestMetrics = latestCycle > 0 ? await db.layerMetric.findMany({ where: { cycle: latestCycle } }) : []
+  1027→  1027→  const byLayer = new Map<number, Record<string, number>>()
+  1028→  1028→  for (const m of latestMetrics) {
+  1029→  1029→    const bucket = byLayer.get(m.layer) ?? {}
+  1030→  1030→    bucket[m.key] = m.value
+  1031→  1031→    byLayer.set(m.layer, bucket)
+  1032→  1032→  }
+  1033→  1033→  const layers = buildLayers(engineStatus, latestCycle, byLayer)
+  1034→  1034→
+  1035→  1035→  const analytics = await buildAnalytics()
+  1036→  1036→
+  1037→  1037→  return {
+  1038→  1038→    engine: {
+  1039→  1039→      status: engineStatus,
+  1040→  1040→      cycles: state.cycles,
+  1041→  1041→      startedAt: state.startedAt.toISOString(),
+  1042→  1042→      lastTickAt: state.lastTickAt.toISOString(),
+  1043→  1043→      uptimeSeconds: Math.max(0, Math.round((Date.now() - state.startedAt.getTime()) / 1000)),
+  1044→  1044→      config,
+  1045→  1045→      layers,
+  1046→  1046→    },
+  1047→  1047→    streams,
+  1048→  1048→    signals,
+  1049→  1049→    hypotheses,
+  1050→  1050→    breakthroughs,
+  1051→  1051→    governance,
+  1052→  1052→    correlations,
+  1053→  1053→    reports,
+  1054→  1054→    analytics,
+  1055→  1055→  }
+  1056→  1056→}
+  1057→  1057→

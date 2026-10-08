@@ -1,0 +1,12 @@
+{
+  "name": "engine-feed",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PROMETHEUS live telemetry feed — pushes engine state over WebSocket and keeps the 7x24 tick heartbeat running without a browser.",
+  "scripts": {
+    "dev": "sh -c 'while true; do bun index.ts; echo \"[feed] supervisor: restarting in 2s\"; sleep 2; done'"
+  },
+  "dependencies": {
+    "socket.io": "^4.8.1"
+  }
+}
