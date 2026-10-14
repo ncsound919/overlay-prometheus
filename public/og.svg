@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1200" height="630" viewBox="0 0 1200 630">
+  <title>Untitled-2</title>
+  <g id="Layer_1" data-name="Layer 1">
+    <path d="M0 0 L1200 0 L1200 630 L0 630 Z" fill="#09090b"/>
+    <path d="M720 315 C720 199.02 814.02 105 930 105 C1045.98 105 1140 199.02 1140 315 C1140 430.98 1045.98 525 930 525 C814.02 525 720 430.98 720 315 Z" fill="none" stroke="#10b981" stroke-width="3" stroke-linecap="round" stroke-miterlimit="10" stroke-dasharray="46 30" opacity="0.2"/>
+    <path d="M780 315 C780 232.157 847.157 165 930 165 C1012.843 165 1080 232.157 1080 315 C1080 397.843 1012.843 465 930 465 C847.157 465 780 397.843 780 315 Z" fill="none" stroke="#10b981" stroke-width="3" stroke-linecap="round" stroke-miterlimit="10" stroke-dasharray="90 40" opacity="0.38"/>
+    <path d="M835 315 C835 262.533 877.533 220 930 220 C982.467 220 1025 262.533 1025 315 C1025 367.467 982.467 410 930 410 C877.533 410 835 367.467 835 315 Z" fill="none" stroke="#10b981" stroke-width="3" stroke-linecap="round" stroke-miterlimit="10" stroke-dasharray="60 50" opacity="0.55"/>
+    <path d="M930 105 C1045.98 105 1140 199.02 1140 315" fill="none" stroke="#10b981" stroke-width="5" stroke-linecap="round" stroke-miterlimit="10" opacity="0.95"/>
+    <path d="M930 220 C982.467 220 1025 262.533 1025 315" fill="none" stroke="#10b981" stroke-width="5" stroke-linecap="round" stroke-miterlimit="10" opacity="0.95"/>
+    <path d="M896 315 C896 296.222 911.222 281 930 281 C948.778 281 964 296.222 964 315 C964 333.778 948.778 349 930 349 C911.222 349 896 333.778 896 315 Z" fill="none" stroke="#8b5cf6" stroke-width="3" stroke-linecap="round" stroke-miterlimit="10" opacity="0.45"/>
+    <path d="M908 315 C908 302.85 917.85 293 930 293 C942.15 293 952 302.85 952 315 C952 327.15 942.15 337 930 337 C917.85 337 908 327.15 908 315 Z" fill="#8b5cf6"/>
+    <path d="M930 66 L930 96" fill="#8b5cf6" stroke="#f59e0b" stroke-width="4" stroke-linecap="round" stroke-miterlimit="10" opacity="0.7"/>
+    <path d="M930 534 L930 564" fill="#8b5cf6" stroke="#f59e0b" stroke-width="4" stroke-linecap="round" stroke-miterlimit="10" opacity="0.7"/>
+    <text transform="matrix(1 0 0 1 72 250)" x="0" y="0" xml:space="preserve" font-family="&apos;JetBrains Mono&apos;" font-size="22" fill="#10b981" letter-spacing="6.16"><tspan x="0" y="0">// AUTONOMOUS DISCOVERY ENGINE</tspan></text>
+    <text transform="matrix(1 0 0 1 72 338)" x="0" y="0" xml:space="preserve" font-family="Inter" font-size="84" fill="#f4f4f5" letter-spacing="0.84"><tspan x="0" y="0">PROMETHEUS</tspan></text>
+    <path d="M72 366 L542 366 L542 369 L72 369 Z" fill="#10b981"/>
+    <text transform="matrix(1 0 0 1 74 420)" x="0" y="0" xml:space="preserve" font-family="Inter" font-size="26" fill="#a1a1aa" letter-spacing="0.52"><tspan x="0" y="0">8-layer inference · discovery · governance</tspan></text>
+    <text transform="matrix(1 0 0 1 74 562)" x="0" y="0" xml:space="preserve" font-family="&apos;JetBrains Mono&apos;" font-size="19" fill="#71717a" letter-spacing="2.28"><tspan x="0" y="0">AURORA-KERNEL // MISSION CONTROL</tspan></text>
+    <path d="M1128 64 L1152 64 M1152 64 L1152 88" fill="#10b981" stroke="#f59e0b" stroke-width="3" stroke-linecap="round" stroke-miterlimit="10" opacity="0.6"/>
+    <path d="M1128 566 L1152 566 M1152 566 L1152 542" fill="#10b981" stroke="#f59e0b" stroke-width="3" stroke-linecap="round" stroke-miterlimit="10" opacity="0.6"/>
+  </g>
+</svg>
